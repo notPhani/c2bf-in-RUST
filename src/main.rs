@@ -68,11 +68,11 @@ fn tokenize(source: &str) -> Vec<Token> {
             '+' => { iter.next(); op_token = Some(if iter.peek() == Some(&'+') { iter.next(); Operations::Increment } else { Operations::Add }); }
             '-' => { iter.next(); op_token = Some(if iter.peek() == Some(&'-') { iter.next(); Operations::Decrement } else { Operations::Subtract }); }
             '*' => { iter.next(); op_token = Some(Operations::Multiply); }
-            '/' => {if let Some(&next) = chars.peek() {
-                    if next == '/' { while let Some(&c) = chars.peek() { if c == '\n' { break; } chars.next(); } continue; }
-                    else if next == '*' { chars.next(); while let Some(c) = chars.next() { if c == '*' { if let Some(&'/') = chars.peek() { chars.next(); break; } } } continue; }
-                    else { op_token = Some(Operations::Divide); }} 
+            '/' => {if let Some(&next) = iter.peek() {
+                    if next == '/' { while let Some(&c) = iter.peek() { if c == '\n' { break; } iter.next(); } continue; }
+                    else if next == '*' { iter.next(); while let Some(c) = iter.next() { if c == '*' { if let Some(&'/') = iter.peek() { iter.next(); break; } } } continue; }
                     else { op_token = Some(Operations::Divide); }
+                    } else { op_token = Some(Operations::Divide); }
                     }
             '%' => { iter.next(); op_token = Some(Operations::Modulus); }
             '=' => { iter.next(); op_token = Some(if iter.peek() == Some(&'=') { iter.next(); Operations::Equal } else { Operations::Assign }); }
