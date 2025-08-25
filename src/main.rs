@@ -147,3 +147,93 @@ fn parse_identifier(tokens: &mut Vec<Token>) -> Option<ASTNode> {
         None
     }
 }
+
+fn parse_dec_or_func(tokens: &mut Vec<Token>) -> Option<Vec<ASTNode>> {
+    if tokens.len() < 2 {
+        return None;
+    }
+
+    let var_type = match tokens.first() {
+        Some(Token::Keyword(k)) => k.clone(),
+        _ => return None,
+    };
+    tokens.remove(0);
+
+    let name = match tokens.first() {
+        Some(Token::Identifier(n)) => n.clone(),
+        _ => return None,
+    };
+    tokens.remove(0);
+
+    let nodes = match tokens.first() {
+        Some(Token::Operator(Operations::Assign)) => {
+            tokens.remove(0); // consume '='
+            let init = parse_literal(tokens).map(Box::new);
+            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::Semicolon))) {
+                tokens.remove(0);
+            }
+            vec![ASTNode::VariableDeclaration {
+                var_type,
+                name,
+                array_dims: None,
+                initial_value: init,
+            }]
+        },
+        Some(Token::Punctuator(Punctuators::LeftBracket)) => {
+            tokens.remove(0); // consume '['
+            let arr_size = if let Some(Token::Number(n)) = tokens.first() {
+                let size = *n as usize;
+                tokens.remove(0);
+                size
+            } else { 0 };
+            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightBracket))) {
+                tokens.remove(0);
+            }
+            let init = if matches!(tokens.first(), Some(Token::Operator(Operations::Assign))) {
+                tokens.remove(0);
+                parse_literal(tokens).map(Box::new)
+            } else { None };
+            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::Semicolon))) {
+                tokens.remove(0);
+            }
+            vec![ASTNode::VariableDeclaration {
+                var_type,
+                name,
+                array_dims: Some(vec![arr_size]),
+                initial_value: init,
+            }]
+        },
+        Some(Token::Punctuator(Punctuators::LeftParen)) => {
+            tokens.remove(0); // consume '('
+            let params = parse_params(tokens);
+            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightParen))) {
+                tokens.remove(0);
+            }
+            let body = if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::LeftBrace))) {
+                parse_block(tokens)
+            } else {
+                Box::new(ASTNode::Empty)
+            };
+            vec![ASTNode::Function {
+                return_type: var_type,
+                name,
+                params,
+                body,
+            }]
+        },
+        Some(Token::Punctuator(Punctuators::Semicolon)) => {
+            tokens.remove(0);
+            vec![ASTNode::VariableDeclaration {
+                var_type,
+                name,
+                array_dims: None,
+                initial_value: None,
+            }]
+        },
+        _ => { return None; }
+    };
+
+    Some(nodes)
+}
+
+
