@@ -93,25 +93,7 @@ fn tokenize(source: &str) -> Vec<Token> {
 
     tokens
 }
-fn main(){
-    let source_code = r#"
-    int main() {
-        int a = 5;
-        int b = 10;
-        if (a < b) {
-            putchar('A');
-        } else {
-            putchar('B');
-        }
-        return 0;
-    }
-    "#;
 
-    let tokens = tokenize(source_code);
-    for token in tokens {
-        println!("{:?}", token);
-    }
-}
 // ------------------------------------------Parser------------------------------------------
 
 #[derive(Debug, Clone, PartialEq)]
@@ -140,43 +122,22 @@ enum ASTNode {
     Empty,
 }
 
-fn peek_next(tokens: &Vec<Token>) -> Option<&Token> {
-    if tokens.len() > 1 {
-        Some(&tokens[1])
-    } else {
-        None
-    }
-}
-
-fn peek_after(tokens: &Vec<Token>, n: usize) -> Option<&Token> {
-    if tokens.len() > n {
-        Some(&tokens[n])
-    } else {
-        None
-    }
-}
-
 fn parse_literal(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     if tokens.is_empty() {
         return None;
     }
 
-    match &tokens[0] {
-        Token::Number(n) => {
-            tokens.remove(0);
-            Some(ASTNode::LiteralInt(*n))
-        }
-        Token::CharLiteral(c) => {
-            tokens.remove(0);
-            Some(ASTNode::LiteralChar(*c))
-        }
-        Token::StringLiteral(s) => {
-            tokens.remove(0);
-            Some(ASTNode::LiteralString(s.clone()))
-        }
+    let token = tokens[0].clone(); // take a clone first
+    tokens.remove(0);              // now safe to mutate
+
+    match token {
+        Token::Number(n) => Some(ASTNode::LiteralInt(n)),
+        Token::CharLiteral(c) => Some(ASTNode::LiteralChar(c)),
+        Token::StringLiteral(s) => Some(ASTNode::LiteralString(s)),
         _ => None,
     }
 }
+
 
 fn parse_identifier(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     if let Some(Token::Identifier(name)) = tokens.first() {
@@ -335,4 +296,52 @@ fn parse_block(tokens: &mut Vec<Token>) -> Box<ASTNode> {
     }
 
     Box::new(ASTNode::Block(stmts))
+}
+fn parse_program(tokens: &mut Vec<Token>) -> ASTNode {
+    let mut nodes = Vec::new();
+
+    while !tokens.is_empty() {
+        // try declaration/function
+        if let Some(mut decls) = parse_dec_or_func(tokens) {
+            nodes.append(&mut decls);
+            continue;
+        }
+
+        // try literal or identifier (placeholder)
+        if let Some(node) = parse_literal(tokens).or_else(|| parse_identifier(tokens)) {
+            nodes.push(node);
+            continue;
+        }
+
+        // fallback: skip unrecognized token
+        tokens.remove(0);
+    }
+
+    ASTNode::Program(nodes)
+}
+
+fn main() {
+    let source_code = r#"
+    int main() {
+        int a = 5;
+        int b = 10;
+        if (a < b) {
+            putchar('A');
+        } else {
+            putchar('B');
+        }
+        return 0;
+    }
+    "#;
+
+    let mut tokens = tokenize(source_code);
+
+    println!("--- Tokens ---");
+    for token in &tokens {
+        println!("{:?}", token);
+    }
+
+    println!("\n--- AST ---");
+    let ast = parse_program(&mut tokens);
+    println!("{:#?}", ast);
 }
