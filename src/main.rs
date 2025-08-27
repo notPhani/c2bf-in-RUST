@@ -1,4 +1,3 @@
-use std::vec;
 
 #[derive(Debug, Clone, PartialEq)]
 enum Keywords { Int, Char, String, Arr, If, Else, For, While, PutChar, GetChar, Return, Function, Break, Continue }
@@ -99,8 +98,8 @@ fn tokenize(source: &str) -> Vec<Token> {
 #[derive(Debug, Clone, PartialEq)]
 enum ASTNode {
     Program(Vec<ASTNode>),
-    Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },//Done
-    VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },//Done
+    Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
+    VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
     Assignment { target: Box<ASTNode>, value: Box<ASTNode> },
     ArrayElement { name: String, index: Box<ASTNode> },
     If { condition: Box<ASTNode>, then_branch: Box<ASTNode>, else_branch: Option<Box<ASTNode>> },
@@ -113,127 +112,44 @@ enum ASTNode {
     UnaryOp { op: Operations, expr: Box<ASTNode> },
     TernaryOp { condition: Box<ASTNode>, true_expr: Box<ASTNode>, false_expr: Box<ASTNode> },
     FunctionCall { name: String, args: Vec<ASTNode> },
-    LiteralInt(i64),//done
-    LiteralChar(char),//done
-    LiteralString(String),//done
-    Identifier(String),//done
+    LiteralInt(i64),
+    LiteralChar(char),
+    LiteralString(String),
+    Identifier(String),
     ArrayAccess { name: String, index: Box<ASTNode> },
     Block(Vec<ASTNode>),
     Empty,
 }
 
-fn parse_literal(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+
+fn parse_literal(tokens: &mut Vec<Token>)->Option<Vec<ASTNode>>{
     if tokens.is_empty() {
         return None;
     }
-
-    let token = tokens[0].clone(); // take a clone first
-    tokens.remove(0);              // now safe to mutate
-
-    match token {
-        Token::Number(n) => Some(ASTNode::LiteralInt(n)),
-        Token::CharLiteral(c) => Some(ASTNode::LiteralChar(c)),
-        Token::StringLiteral(s) => Some(ASTNode::LiteralString(s)),
-        _ => None,
+    else{
+        let token = tokens.remove(0);
+        match token {
+            Token::Number(n) => Some(vec![ASTNode::LiteralInt(n)]),
+            Token::CharLiteral(c) => Some(vec![ASTNode::LiteralChar(c)]),
+            Token::StringLiteral(s) => Some(vec![ASTNode::LiteralString(s)]),
+            _ => None,
+        }
     }
 }
 
-fn parse_identifier(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    if let Some(Token::Identifier(name)) = tokens.first() {
-        let name = name.clone();
-        tokens.remove(0);
-        Some(ASTNode::Identifier(name))
-    } else {
-        None
-    }
-}
+// I got few ideas for the parser for the expression : 
+// We are gonna do the simple pratt parser but with some modifications
+// We will fold the expressions if all the expressions are constant literals
+// We will switch to the actual pratt parser if we encounter an identifier or a function call
+// We will also handle the ternatry operator here
+// We will write a seperate function for parsing unary operations because bruh x = ++x doesn't seem right atleast for C language
+// The best thing to do here is to check the expression and run through all the literals and operators and then build the AST from that
+// We will try to calculate the value of the expression if all the literals are constant,
+// If we hit a error we can leave the expression as it is and return the AST as it is
+// This will help in constant folding and optimization
 
-fn parse_dec_or_func(tokens: &mut Vec<Token>) -> Option<Vec<ASTNode>> {
-    if tokens.len() < 2 {
+fn parse_expression(tokens: &mut Vec<Token>) -> Option<Vec<ASTNode>> {
+    if tokens.is_empty() {
         return None;
     }
-
-    let var_type = match tokens.first() {
-        Some(Token::Keyword(k)) => k.clone(),
-        _ => return None,
-    };
-    tokens.remove(0);
-
-    let name = match tokens.first() {
-        Some(Token::Identifier(n)) => n.clone(),
-        _ => return None,
-    };
-    tokens.remove(0);
-
-    let nodes = match tokens.first() {
-        Some(Token::Operator(Operations::Assign)) => {
-            tokens.remove(0); // consume '='
-            let init = parse_literal(tokens).map(Box::new);
-            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::Semicolon))) {
-                tokens.remove(0);
-            }
-            vec![ASTNode::VariableDeclaration {
-                var_type,
-                name,
-                array_dims: None,
-                initial_value: init,
-            }]
-        },
-        Some(Token::Punctuator(Punctuators::LeftBracket)) => {
-            tokens.remove(0); // consume '['
-            let arr_size = if let Some(Token::Number(n)) = tokens.first() {
-                let size = *n as usize;
-                tokens.remove(0);
-                size
-            } else { 0 };
-            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightBracket))) {
-                tokens.remove(0);
-            }
-            let init = if matches!(tokens.first(), Some(Token::Operator(Operations::Assign))) {
-                tokens.remove(0);
-                parse_literal(tokens).map(Box::new)
-            } else { None };
-            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::Semicolon))) {
-                tokens.remove(0);
-            }
-            vec![ASTNode::VariableDeclaration {
-                var_type,
-                name,
-                array_dims: Some(vec![arr_size]),
-                initial_value: init,
-            }]
-        },
-        Some(Token::Punctuator(Punctuators::LeftParen)) => {
-            tokens.remove(0); // consume '('
-            let params = parse_params(tokens);
-            if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightParen))) {
-                tokens.remove(0);
-            }
-            let body = if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::LeftBrace))) {
-                parse_block(tokens)
-            } else {
-                Box::new(ASTNode::Empty)
-            };
-            vec![ASTNode::Function {
-                return_type: var_type,
-                name,
-                params,
-                body,
-            }]
-        },
-        Some(Token::Punctuator(Punctuators::Semicolon)) => {
-            tokens.remove(0);
-            vec![ASTNode::VariableDeclaration {
-                var_type,
-                name,
-                array_dims: None,
-                initial_value: None,
-            }]
-        },
-        _ => { return None; }
-    };
-
-    Some(nodes)
 }
-
-
