@@ -101,14 +101,15 @@ enum ASTNode {
     Program(Vec<ASTNode>),
     Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
     VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
-    Assignment { target: Box<ASTNode>, value: Box<ASTNode> },
     ArrayElement { name: String, index: Box<ASTNode> },
-    If { condition: Box<ASTNode>, then_branch: Box<ASTNode>, else_branch: Option<Box<ASTNode>> },
-    While { condition: Box<ASTNode>, body: Box<ASTNode> },
+    */
     For { init: Box<ASTNode>, condition: Box<ASTNode>, increment: Box<ASTNode>, body: Box<ASTNode> },
     Return(Option<Box<ASTNode>>),
+    While { condition: Box<ASTNode>, body: Box<ASTNode> },
+    If { condition: Box<ASTNode>, then_branch: Box<ASTNode>, else_branch: Option<Box<ASTNode>> },
     Break,
-    Continue,*/
+    Continue,
+    Assignment { target: Box<ASTNode>, value: Box<ASTNode> },
     BinaryOp { op: Operations, left: Box<ASTNode>, right: Box<ASTNode> },
     UnaryOp { op: Operations, expr: Box<ASTNode> },
     TernaryOp { condition: Box<ASTNode>, true_expr: Box<ASTNode>, false_expr: Box<ASTNode> },
@@ -118,25 +119,34 @@ enum ASTNode {
     LiteralString(String),
     Identifier(String),
     ArrayAccess { name: String, index: Box<ASTNode> },
-    //Block(Vec<ASTNode>),
-    //Empty,
+    Block(Vec<ASTNode>),
+    Empty,
 }
 
 
-fn parse_literal(tokens: &mut Vec<Token>)->Option<Vec<ASTNode>>{
+fn parse_literal(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     if tokens.is_empty() {
         return None;
     }
-    else{
-        let token = tokens.remove(0);
-        match token {
-            Token::Number(n) => Some(vec![ASTNode::LiteralInt(n)]),
-            Token::CharLiteral(c) => Some(vec![ASTNode::LiteralChar(c)]),
-            Token::StringLiteral(s) => Some(vec![ASTNode::LiteralString(s)]),
-            _ => None,
-        }
+    let token = tokens.remove(0);
+    match token {
+        Token::Number(n) => Some(ASTNode::LiteralInt(n)),
+        Token::CharLiteral(c) => Some(ASTNode::LiteralChar(c)),
+        Token::StringLiteral(s) => Some(ASTNode::LiteralString(s)),
+        _ => None,
     }
 }
+
+fn parse_identifier(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    if let Some(Token::Identifier(name)) = tokens.first() {
+        let name = name.clone();
+        tokens.remove(0);
+        Some(ASTNode::Identifier(name))
+    } else {
+        None
+    }
+}
+
 
 // I got few ideas for the parser for the expression : 
 // We are gonna do the simple pratt parser but with some modifications
@@ -150,16 +160,6 @@ fn parse_literal(tokens: &mut Vec<Token>)->Option<Vec<ASTNode>>{
 // This will help in constant folding and optimization
 // We will do seperate functions for parsing binary and unary operations and combine them in the parse_expression function
 
-
-fn parse_identifier(tokens: &mut Vec<Token>) -> Option<Vec<ASTNode>> {
-    if let Some(Token::Identifier(name)) = tokens.first() {
-        let name = name.clone(); // clone so we can consume
-        tokens.remove(0);         // consume the token
-        Some(vec![ASTNode::Identifier(name)])
-    } else {
-        None
-    }
-}
 /* 
 fn parse_unary_operation(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     if tokens.is_empty() { return None; }
@@ -179,25 +179,26 @@ fn parse_unary_operation(tokens: &mut Vec<Token>) -> Option<ASTNode> {
 }
 */
 
-fn parse_ternary_operation(tokens: &mut Vec<Token>, condition: ASTNode) -> Option<Vec<ASTNode>> {
+fn parse_ternary_operation(tokens: &mut Vec<Token>, condition: ASTNode) -> Option<ASTNode> {
     if let Some(Token::Operator(Operations::Ternary)) = tokens.first() {
         tokens.remove(0); // consume '?'
         let true_expr = parse_expression(tokens)?;
         if let Some(Token::Punctuator(Punctuators::Colon)) = tokens.first() {
             tokens.remove(0); // consume ':'
             let false_expr = parse_expression(tokens)?;
-            Some(vec![ASTNode::TernaryOp {
+            Some(ASTNode::TernaryOp {
                 condition: Box::new(condition),
-                true_expr: Box::new(true_expr[0].clone()),
-                false_expr: Box::new(false_expr[0].clone())
-            }])
+                true_expr: Box::new(true_expr),
+                false_expr: Box::new(false_expr),
+            })
         } else {
-            None // Error: Expected ':'
+            None // error: expected ':'
         }
     } else {
-        Some(vec![condition]) // Not a ternary operation, return original condition
+        Some(condition) // not ternary, return condition untouched
     }
 }
+
 
 fn get_precedence(op: &Operations) -> u8 {
     match op {
@@ -221,87 +222,72 @@ fn parse_primary(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     if tokens.is_empty() { return None; }
 
     let mut node = match tokens.first()? {
-        // Handle parentheses first
         Token::Punctuator(Punctuators::LeftParen) => {
             tokens.remove(0); // consume '('
             let expr = parse_expression(tokens)?;
             if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightParen))) {
                 tokens.remove(0); // consume ')'
-                expr[0].clone()
+                expr
             } else {
-                return None; // missing ')'
+                return None;
             }
         },
-        // Handle unary operators
         Token::Operator(op) if matches!(op, Operations::Subtract | Operations::Not | Operations::BitwiseNot) => {
             let op = if let Token::Operator(o) = tokens.remove(0) { o } else { unreachable!() };
-            let expr = parse_primary(tokens)?; // Use parse_primary instead of parse_expression
+            let expr = parse_primary(tokens)?;
             ASTNode::UnaryOp { op, expr: Box::new(expr) }
         },
-        // Handle literals
-        Token::Number(_) | Token::CharLiteral(_) | Token::StringLiteral(_) => {
-            parse_literal(tokens)?.pop()?
-        },
-        // Handle identifiers
-        Token::Identifier(_) => {
-            parse_identifier(tokens)?.pop()?
-        },
+        Token::Number(_) | Token::CharLiteral(_) | Token::StringLiteral(_) => parse_literal(tokens)?,
+        Token::Identifier(_) => parse_identifier(tokens)?,
         _ => return None,
     };
 
-    // Handle postfix operations (array access, function calls)
+    // postfix: array access + function call
     loop {
         match tokens.first() {
             Some(Token::Punctuator(Punctuators::LeftBracket)) => {
-                tokens.remove(0); // consume '['
+                tokens.remove(0);
                 let index = parse_expression(tokens)?;
                 if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightBracket))) {
-                    tokens.remove(0); // consume ']'
+                    tokens.remove(0);
                     if let ASTNode::Identifier(name) = node {
-                        node = ASTNode::ArrayAccess { name, index: Box::new(index[0].clone()) };
+                        node = ASTNode::ArrayAccess { name, index: Box::new(index) };
                     } else {
                         return None;
                     }
-                } else { 
-                    return None; 
-                }
+                } else { return None; }
             },
             Some(Token::Punctuator(Punctuators::LeftParen)) => {
-                tokens.remove(0); // consume '('
+                tokens.remove(0);
                 let mut args = Vec::new();
-                
                 if !matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightParen))) {
                     loop {
                         let expr = parse_expression(tokens)?;
-                        args.push(expr[0].clone());
-                        
+                        args.push(expr);
                         if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightParen))) {
                             break;
                         } else if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::Comma))) {
-                            tokens.remove(0); // consume ','
+                            tokens.remove(0);
                         } else {
-                            return None; // expected ',' or ')'
+                            return None;
                         }
                     }
                 }
-                
                 if matches!(tokens.first(), Some(Token::Punctuator(Punctuators::RightParen))) {
-                    tokens.remove(0); // consume ')'
+                    tokens.remove(0);
                     if let ASTNode::Identifier(name) = node {
                         node = ASTNode::FunctionCall { name, args };
                     } else {
                         return None;
                     }
-                } else { 
-                    return None; 
-                }
+                } else { return None; }
             },
             _ => break,
         }
     }
-
     Some(node)
 }
+
 
 
 fn parse_binary_ops(tokens: &mut Vec<Token>, min_prec: u8) -> Option<ASTNode> {
@@ -317,7 +303,7 @@ fn parse_binary_ops(tokens: &mut Vec<Token>, min_prec: u8) -> Option<ASTNode> {
         // ternary after binary
         if let Some(Token::Operator(Operations::Ternary)) = tokens.first() {
             let tern = parse_ternary_operation(tokens, right)?;
-            right = tern[0].clone();
+            right = tern.clone();
         }
 
         left = ASTNode::BinaryOp { op, left: Box::new(left), right: Box::new(right) };
@@ -344,6 +330,7 @@ fn is_foldable(node: &ASTNode) -> bool {
         ASTNode::TernaryOp { condition, true_expr, false_expr, .. } => {
             is_foldable(condition) && is_foldable(true_expr) && is_foldable(false_expr)
         },
+        _ => false, // Other nodes are not foldable
     }
 }
 fn eval_tree(node: ASTNode) -> Option<ASTNode> {
@@ -394,39 +381,285 @@ fn eval_tree(node: ASTNode) -> Option<ASTNode> {
     }
 }
 
-fn parse_expression(tokens: &mut Vec<Token>) -> Option<Vec<ASTNode>> {
+fn parse_expression(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     let mut node = parse_binary_ops(tokens, 1)?;
     if let Some(Token::Operator(Operations::Ternary)) = tokens.first() {
         let tern = parse_ternary_operation(tokens, node)?;
-        node = tern[0].clone();
+        node = tern.clone();
     }
     if is_foldable(&node) {
-        // If foldable, evaluate it to a literal right away
         if let Some(folded_node) = eval_tree(node.clone()) {
             println!("Folded expression to: {:?}", folded_node);
             node = folded_node;
         }
     }
-    Some(vec![node])
+    Some(node)
 }
 
-fn main() {
-    let examples = vec![
-        "1 + 2 * 3",           // Should fold to: LiteralInt(7)
-        "10 - 4 / 2",          // Should fold to: LiteralInt(8)  
-        "5 > 3 ? 100 : 200",   // Should fold to: LiteralInt(100)
-        "-42 + 2",             // Should fold to: LiteralInt(-40)
-        "a + 2 * 3",           // Won't fold (contains identifier)//Being conservative here
-    ];
+//Phew mf that was a lot of work
+//Now we write assignment parsing MF this is a lot of work too
+fn parse_assignment(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    let left = parse_expression(tokens)?;
     
-    for source in examples {
-        println!("Source: {}", source);
-        let mut tokens = tokenize(source);
-        match parse_expression(&mut tokens) {
-            Some(ast) => println!("Final AST: {:#?}", ast),
-            None => println!("Parsing failed"),
+    if let Some(Token::Operator(Operations::Assign)) = tokens.first() {
+        tokens.remove(0); // consume '='
+        
+        match left {
+            ASTNode::Identifier(_) | ASTNode::ArrayAccess { .. } => {
+                let right = parse_assignment(tokens)?; 
+                Some(ASTNode::Assignment { 
+                    target: Box::new(left), 
+                    value: Box::new(right)
+                })
+            },
+            _ => None,
         }
-        println!("-----------------------");
+    } else {
+        Some(left)
     }
 }
 
+
+fn parse_block(tokens: &mut Vec<Token>)->Option<ASTNode>{
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftBrace)){return None;}
+    tokens.remove(0);
+    let mut statements = Vec::new();
+    while tokens.first() != Some(&Token::Punctuator(Punctuators::RightBrace)) && !tokens.is_empty(){
+        if let Some(stmt) = parse_statement(tokens){
+            statements.push(stmt);
+        } else {
+            return None; // Error parsing statement
+        }
+    }
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightBrace)) { return None; }
+    tokens.remove(0);
+    
+    Some(ASTNode::Block(statements))
+}
+
+fn parse_if(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    if tokens.first() != Some(&Token::Keyword(Keywords::If)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    let condition = parse_expression(tokens)?; // already an ASTNode
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    let then_branch = parse_statement(tokens)?;
+    let else_branch = if tokens.first() == Some(&Token::Keyword(Keywords::Else)) {
+        tokens.remove(0);
+        let else_stmt = parse_statement(tokens)?;
+        Some(Box::new(else_stmt))
+    } else {
+        None
+    };
+
+    Some(ASTNode::If {
+        condition: Box::new(condition),
+        then_branch: Box::new(then_branch),
+        else_branch,
+    })
+}
+
+
+fn parse_while(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    if tokens.first() != Some(&Token::Keyword(Keywords::While)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    let condition = parse_expression(tokens)?; // ASTNode
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    let body = parse_statement(tokens)?;
+
+    Some(ASTNode::While {
+        condition: Box::new(condition),
+        body: Box::new(body),
+    })
+}
+
+
+fn parse_return(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    if tokens.first() != Some(&Token::Keyword(Keywords::Return)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+        tokens.remove(0);
+        Some(ASTNode::Return(None)) // void return
+    } else {
+        let expr = parse_expression(tokens)?;
+        if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+            tokens.remove(0);
+        }
+        Some(ASTNode::Return(Some(Box::new(expr))))
+    }
+}
+
+fn parse_for(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    if tokens.first() != Some(&Token::Keyword(Keywords::For)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    // init
+    let init = if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+        ASTNode::Empty
+    } else {
+        parse_assignment(tokens)?
+    };
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::Semicolon)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    // condition
+    let condition = if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+        ASTNode::LiteralInt(1)
+    } else {
+        parse_expression(tokens)?
+    };
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::Semicolon)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    // increment
+    let increment = if tokens.first() == Some(&Token::Punctuator(Punctuators::RightParen)) {
+        ASTNode::Empty
+    } else {
+        parse_assignment(tokens)?
+    };
+
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
+        return None;
+    }
+    tokens.remove(0);
+
+    let body = parse_statement(tokens)?;
+
+    Some(ASTNode::For {
+        init: Box::new(init),
+        condition: Box::new(condition),
+        increment: Box::new(increment),
+        body: Box::new(body),
+    })
+}
+
+
+fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    match tokens.first()? {
+        Token::Keyword(Keywords::If) => parse_if(tokens),
+        Token::Keyword(Keywords::While) => parse_while(tokens),
+        Token::Keyword(Keywords::For) => parse_for(tokens),
+        Token::Keyword(Keywords::Return) => parse_return(tokens),
+        Token::Keyword(Keywords::Break) => { 
+            tokens.remove(0);
+            if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+                tokens.remove(0); // consume ';'
+            }
+            Some(ASTNode::Break) 
+        },
+        Token::Keyword(Keywords::Continue) => { 
+            tokens.remove(0);
+            if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+                tokens.remove(0); // consume ';'
+            }
+            Some(ASTNode::Continue) 
+        },
+        Token::Punctuator(Punctuators::LeftBrace) => parse_block(tokens),
+        _ => {
+            // Expression/assignment statements - THESE need semicolons
+            let stmt = parse_assignment(tokens)?;
+            if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+                tokens.remove(0); // consume ';'
+            }
+            Some(stmt)
+        }
+    }
+}
+
+
+
+fn main() {
+   let statement_examples = vec![
+    // ✅ If statements
+    "if (x > 0) return 1;",
+    "if (1 + 1 > 1) x = 42; else y = 0;",
+    "if (a) if (b) x = 1; else x = 2;",
+    
+    // ✅ While loops
+    "while (i < 10) i = i + 1;",
+    "while (1) break;",
+    "while (nums[i] != 0) { i = i + 1; sum = sum + nums[i]; }",
+    
+    // ✅ For loops
+    "for (i = 0; i < 10; i = i + 1) sum = sum + i;",
+    "for (;;) break;",
+    "for (; i < 10;) i = i + 1;",
+    "for (x = 0; x < n; x = x + 2) { data[x] = x * x; }",
+    
+    // ✅ Return statements
+    "return;",
+    "return 42;",
+    "return x + y * 2;",
+    "return foo(a, b);",
+    
+    // ✅ Break/Continue
+    "break;",
+    "continue;",
+    
+    // ✅ Block statements
+    "{ x = 1; y = 2; return x + y; }",
+    "{ if (x) { y = 1; } else { y = 2; } }",
+    
+    // ✅ Assignment/Expression statements
+   ];
+    
+    for source in statement_examples {
+        println!("\n🔍 Testing Statement: {}", source);
+        
+        let mut tokens = tokenize(source);
+        match parse_statement(&mut tokens) {
+            Some(ast) => {
+                println!("✅ Success!");
+                println!("AST: {:#?}", ast);
+            },
+            None => {
+                println!("❌ Failed to parse");
+            }
+        }
+        
+        if !tokens.is_empty() {
+            println!("⚠️  Remaining tokens: {:?}", tokens);
+        }
+    }
+}
