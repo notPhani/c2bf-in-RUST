@@ -97,12 +97,12 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 #[derive(Debug, Clone, PartialEq)]
 enum ASTNode {
-    /* 
-    Program(Vec<ASTNode>),
+     /* 
+    Program(Vec<ASTNode>),//yet to implement
     Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
     VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
     ArrayElement { name: String, index: Box<ASTNode> },
-    */
+*/
     For { init: Box<ASTNode>, condition: Box<ASTNode>, increment: Box<ASTNode>, body: Box<ASTNode> },
     Return(Option<Box<ASTNode>>),
     While { condition: Box<ASTNode>, body: Box<ASTNode> },
@@ -399,6 +399,7 @@ fn parse_expression(tokens: &mut Vec<Token>) -> Option<ASTNode> {
 //Phew mf that was a lot of work
 //Now we write assignment parsing MF this is a lot of work too
 fn parse_assignment(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    //Handles only array element assignment and identifier assignment, not variable declaration nor, array declaration.
     let left = parse_expression(tokens)?;
     
     if let Some(Token::Operator(Operations::Assign)) = tokens.first() {
@@ -576,6 +577,7 @@ fn parse_for(tokens: &mut Vec<Token>) -> Option<ASTNode> {
 
 
 fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    //Prolly should add function calls here too
     match tokens.first()? {
         Token::Keyword(Keywords::If) => parse_if(tokens),
         Token::Keyword(Keywords::While) => parse_while(tokens),
@@ -607,6 +609,52 @@ fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     }
 }
 
+// since we are C to brainfuck compiler we will have to do something clever 
+// Since C -> variable declaration and function declaration start the same
+// Hence first consume the type as Keyword and then check if the next token is Identifier
+// Then branch if "[" to array declaration or "(" to function declaration or "=" or ";" to variable declaration
+// We will do this in the parse_statement function itself because it is easier to manage the tokens
+// We will also have to handle the function parameters and return types
+
+fn parse_varibale(tokens: &mut Vec<Token>, return_type: Keywords, name :String)->Option<ASTNode>{
+    //Should handle variable and array declarations, possible cases:
+    // type name;
+    // type name = expr; -> assignments are being handled in parse_assignment
+    // type name[expr]; - > expr only returning int
+    // type name[expr] = {expr, expr, expr}; -> must add this to parse_assignment / or keep this standalone
+
+    let mut array_dims: Option<u8> = Some(u8::MAX);
+
+    
+
+}
+
+fn parse_function(tokens: &mut Vec<Token>, return_type: Keywords, name:String)->Option<ASTNode>{
+    // Should handle function declarations and function definitions
+    //Possible cases:
+    // type name(params); -> function declaration -> should write a function for parsing parameters
+    // type name (params){body}-> branch to parse_block for body
+    
+}
+
+fn parse_dec_or_func(tokens: &mut Vec<Token>)-> Option<ASTNode>{
+    if tokens.first().is_none(){return None;}
+    //Skip the first and the second tokens to a stack and then check the third token to branch
+    let return_type = if let Token::Keyword(k) = tokens.remove(0) { k } else { return None; };
+    let identifier = parse_identifier(tokens)?;
+    let name  = if let ASTNode::Identifier(n) = identifier { n } else { return None; }; 
+    match tokens.first()? {
+        Token::Punctuator(Punctuators::LeftParen) => {
+            parse_function(tokens, return_type, name)
+        },
+        Token::Punctuator(Punctuators::LeftBracket) | 
+        Token::Operator(Operations::Assign) | 
+        Token::Punctuator(Punctuators::Semicolon) => {
+            parse_variable(tokens, return_type, name)
+        },
+        _ => None,
+    }
+}
 
 
 fn main() {
