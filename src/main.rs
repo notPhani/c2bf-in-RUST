@@ -616,7 +616,7 @@ fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
 // We will do this in the parse_statement function itself because it is easier to manage the tokens
 // We will also have to handle the function parameters and return types
 
-fn parse_varibale(tokens: &mut Vec<Token>, return_type: Keywords, name :String)->Option<ASTNode>{
+fn parse_variable(tokens: &mut Vec<Token>, return_type: Keywords, name :String)->Option<ASTNode>{
     //Should handle variable and array declarations, possible cases:
     // type name;
     // type name = expr; -> assignments are being handled in parse_assignment
