@@ -624,7 +624,7 @@ fn parse_variable(tokens: &mut Vec<Token>, return_type: Keywords, name :String)-
     // type name[expr] = {expr, expr, expr}; -> must add this to parse_assignment / or keep this standalone
 
     let mut array_dims: Option<u8> = Some(u8::MAX);
-
+    
     
 
 }
@@ -634,7 +634,7 @@ fn parse_function(tokens: &mut Vec<Token>, return_type: Keywords, name:String)->
     //Possible cases:
     // type name(params); -> function declaration -> should write a function for parsing parameters
     // type name (params){body}-> branch to parse_block for body
-    
+    //dsfsfsdfsfsjjjjjjjjjjjjjjjjjjjjjjjjjjjjh
 }
 
 fn parse_dec_or_func(tokens: &mut Vec<Token>)-> Option<ASTNode>{
@@ -655,7 +655,8 @@ fn parse_dec_or_func(tokens: &mut Vec<Token>)-> Option<ASTNode>{
         _ => None,
     }
 }
-
+//------------------------------------------Semantic Analysis & IR------------------------------------------
+//------------------------------------------Code Generation------------------------------------------
 
 fn main() {
    let statement_examples = vec![
@@ -711,3 +712,4 @@ fn main() {
         }
     }
 }
+
