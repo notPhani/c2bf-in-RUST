@@ -99,10 +99,12 @@ fn tokenize(source: &str) -> Vec<Token> {
 enum ASTNode {
      /* 
     Program(Vec<ASTNode>),//yet to implement
-    Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
-    VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
+    
+    
     ArrayElement { name: String, index: Box<ASTNode> },
 */
+    Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
+    VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
     For { init: Box<ASTNode>, condition: Box<ASTNode>, increment: Box<ASTNode>, body: Box<ASTNode> },
     Return(Option<Box<ASTNode>>),
     While { condition: Box<ASTNode>, body: Box<ASTNode> },
@@ -575,9 +577,7 @@ fn parse_for(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     })
 }
 
-
 fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    //Prolly should add function calls here too
     match tokens.first()? {
         Token::Keyword(Keywords::If) => parse_if(tokens),
         Token::Keyword(Keywords::While) => parse_while(tokens),
@@ -586,28 +586,34 @@ fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
         Token::Keyword(Keywords::Break) => { 
             tokens.remove(0);
             if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-                tokens.remove(0); // consume ';'
+                tokens.remove(0);
             }
             Some(ASTNode::Break) 
         },
         Token::Keyword(Keywords::Continue) => { 
             tokens.remove(0);
             if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-                tokens.remove(0); // consume ';'
+                tokens.remove(0);
             }
             Some(ASTNode::Continue) 
         },
         Token::Punctuator(Punctuators::LeftBrace) => parse_block(tokens),
+        // Handle variable and function declarations
+        Token::Keyword(Keywords::Int) | Token::Keyword(Keywords::Char) | 
+        Token::Keyword(Keywords::String) | Token::Keyword(Keywords::Arr) => {
+            parse_dec_or_func(tokens)
+        },
         _ => {
-            // Expression/assignment statements - THESE need semicolons
+            // Expression/assignment statements
             let stmt = parse_assignment(tokens)?;
             if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-                tokens.remove(0); // consume ';'
+                tokens.remove(0);
             }
             Some(stmt)
         }
     }
 }
+
 
 // since we are C to brainfuck compiler we will have to do something clever 
 // Since C -> variable declaration and function declaration start the same
@@ -616,26 +622,181 @@ fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
 // We will do this in the parse_statement function itself because it is easier to manage the tokens
 // We will also have to handle the function parameters and return types
 
-fn parse_variable(tokens: &mut Vec<Token>, return_type: Keywords, name :String)->Option<ASTNode>{
-    //Should handle variable and array declarations, possible cases:
-    // type name;
-    // type name = expr; -> assignments are being handled in parse_assignment
-    // type name[expr]; - > expr only returning int
-    // type name[expr] = {expr, expr, expr}; -> must add this to parse_assignment / or keep this standalone
+fn parse_variable(tokens: &mut Vec<Token>, var_type: Keywords, name: String) -> Option<ASTNode> {
+    let mut array_dims = Vec::new();
+    
+    // Handle array dimensions: int arr[10][20];
+    while tokens.first() == Some(&Token::Punctuator(Punctuators::LeftBracket)) {
+        tokens.remove(0); // consume '['
+        
+        let size_expr = parse_expression(tokens)?;
+        
+        // For now, only allow constant integer array sizes
+        match size_expr {
+            ASTNode::LiteralInt(size) if size > 0 => {
+                array_dims.push(size as usize);
+            },
+            _ => return None, // Non-constant or invalid array size
+        }
+        
+        if tokens.first() != Some(&Token::Punctuator(Punctuators::RightBracket)) {
+            return None; // Missing closing ']'
+        }
+        tokens.remove(0); // consume ']'
+    }
+    
+    // Handle initialization
+    let initial_value = if tokens.first() == Some(&Token::Operator(Operations::Assign)) {
+        tokens.remove(0); // consume '='
+        
+        // Check for array initializer list: = {1, 2, 3}
+        if tokens.first() == Some(&Token::Punctuator(Punctuators::LeftBrace)) {
+            Some(Box::new(parse_array_initializer(tokens)?))
+        } else {
+            // Single expression initialization
+            Some(Box::new(parse_expression(tokens)?))
+        }
+    } else {
+        None // No initialization
+    };
 
-    let mut array_dims: Option<u8> = Some(u8::MAX);
-    
-    
+    // ALWAYS consume semicolon at the end
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::Semicolon)) {
+        return None; // Missing semicolon
+    }
+    tokens.remove(0); // consume ';'
+
+    Some(ASTNode::VariableDeclaration {
+        var_type,
+        name,
+        array_dims: if array_dims.is_empty() { None } else { Some(array_dims) },
+        initial_value,
+    })
 
 }
 
-fn parse_function(tokens: &mut Vec<Token>, return_type: Keywords, name:String)->Option<ASTNode>{
-    // Should handle function declarations and function definitions
-    //Possible cases:
-    // type name(params); -> function declaration -> should write a function for parsing parameters
-    // type name (params){body}-> branch to parse_block for body
-    //dsfsfsdfsfsjjjjjjjjjjjjjjjjjjjjjjjjjjjjh
+// Helper function for array initializers: {1, 2, 3, 4}
+fn parse_array_initializer(tokens: &mut Vec<Token>) -> Option<ASTNode> {
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftBrace)) {
+        return None;
+    }
+    tokens.remove(0); // consume '{'
+    
+    let mut elements = Vec::new();
+    
+    // Handle empty initializer: {}
+    if tokens.first() == Some(&Token::Punctuator(Punctuators::RightBrace)) {
+        tokens.remove(0); // consume '}'
+        return Some(ASTNode::Block(elements)); // Reuse Block for initializer list
+    }
+    
+    // Parse comma-separated expressions
+    loop {
+        let expr = parse_expression(tokens)?;
+        elements.push(expr);
+        
+        match tokens.first() {
+            Some(Token::Punctuator(Punctuators::Comma)) => {
+                tokens.remove(0); // consume ','
+            },
+            Some(Token::Punctuator(Punctuators::RightBrace)) => {
+                tokens.remove(0); // consume '}'
+                break;
+            },
+            _ => return None, // Expected ',' or '}'
+        }
+    }
+    Some(ASTNode::Block(elements)) // Reuse Block node for initializer
 }
+
+
+fn parse_function(tokens: &mut Vec<Token>, return_type: Keywords, name: String) -> Option<ASTNode> {
+    // We expect '(' at this point
+    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
+        return None;
+    }
+    tokens.remove(0); // consume '('
+    
+    // Parse parameter list
+    let params = parse_parameter_list(tokens)?;
+    
+    // Check if it's declaration (;) or definition ({...})
+    match tokens.first() {
+        Some(Token::Punctuator(Punctuators::Semicolon)) => {
+            // Function declaration: int foo(int x, char y);
+            tokens.remove(0); // consume ';'
+            Some(ASTNode::Function {
+                return_type,
+                name,
+                params,
+                body: Box::new(ASTNode::Empty), // No body for declarations
+            })
+        },
+        Some(Token::Punctuator(Punctuators::LeftBrace)) => {
+            // Function definition: int foo(int x, char y) { ... }
+            let body = parse_block(tokens)?;
+            Some(ASTNode::Function {
+                return_type,
+                name,
+                params,
+                body: Box::new(body),
+            })
+        },
+        _ => None, // Expected ';' or '{'
+    }
+}
+
+// Helper function to parse parameter lists: (int a, char b, int c)
+fn parse_parameter_list(tokens: &mut Vec<Token>) -> Option<Vec<(Keywords, String)>> {
+    let mut params = Vec::new();
+    
+    // Handle empty parameter list: ()
+    if tokens.first() == Some(&Token::Punctuator(Punctuators::RightParen)) {
+        tokens.remove(0); // consume ')'
+        return Some(params);
+    }
+    
+    // Parse parameters
+    loop {
+        // Parse parameter type
+        let param_type = match tokens.first() {
+            Some(Token::Keyword(k)) => {
+                let keyword = k.clone();
+                tokens.remove(0);
+                keyword
+            },
+            _ => return None, // Expected type keyword
+        };
+        
+        // Parse parameter name
+        let param_name = match tokens.first() {
+            Some(Token::Identifier(name)) => {
+                let name = name.clone();
+                tokens.remove(0);
+                name
+            },
+            _ => return None, // Expected parameter name
+        };
+        
+        params.push((param_type, param_name));
+        
+        // Check for continuation
+        match tokens.first() {
+            Some(Token::Punctuator(Punctuators::Comma)) => {
+                tokens.remove(0); // consume ','
+                // Continue to next parameter
+            },
+            Some(Token::Punctuator(Punctuators::RightParen)) => {
+                tokens.remove(0); // consume ')'
+                break; // End of parameter list
+            },
+            _ => return None, // Expected ',' or ')'
+        }
+    }
+    
+    Some(params)
+}
+
 
 fn parse_dec_or_func(tokens: &mut Vec<Token>)-> Option<ASTNode>{
     if tokens.first().is_none(){return None;}
@@ -659,41 +820,29 @@ fn parse_dec_or_func(tokens: &mut Vec<Token>)-> Option<ASTNode>{
 //------------------------------------------Code Generation------------------------------------------
 
 fn main() {
-   let statement_examples = vec![
-    // ✅ If statements
-    "if (x > 0) return 1;",
-    "if (1 + 1 > 1) x = 42; else y = 0;",
-    "if (a) if (b) x = 1; else x = 2;",
+   // Add these to your main() test suite
+let declaration_examples = vec![
+    // Variable declarations
+    "int x;",
+    "int x = 42;",
+    "char c = 'a';",
+    "int arrs[10];",
+    "int matrix[5][3];",
+    "int nums[4] = {1, 2, 3, 4, 9*6};",
     
-    // ✅ While loops
-    "while (i < 10) i = i + 1;",
-    "while (1) break;",
-    "while (nums[i] != 0) { i = i + 1; sum = sum + nums[i]; }",
+    // Function declarations
+    "int main();",
+    "int add(int a, int b);",
+    "char getChar(int index, char default);",
     
-    // ✅ For loops
-    "for (i = 0; i < 10; i = i + 1) sum = sum + i;",
-    "for (;;) break;",
-    "for (; i < 10;) i = i + 1;",
-    "for (x = 0; x < n; x = x + 2) { data[x] = x * x; }",
+    // Function definitions
+    "int main() { return 0; }",
+    "int add(int a, int b) { return a + b; }",
+    "int factorial(int n) { if (n <= 1) return 1; return n * factorial(n - 1); }",
+];
+
     
-    // ✅ Return statements
-    "return;",
-    "return 42;",
-    "return x + y * 2;",
-    "return foo(a, b);",
-    
-    // ✅ Break/Continue
-    "break;",
-    "continue;",
-    
-    // ✅ Block statements
-    "{ x = 1; y = 2; return x + y; }",
-    "{ if (x) { y = 1; } else { y = 2; } }",
-    
-    // ✅ Assignment/Expression statements
-   ];
-    
-    for source in statement_examples {
+    for source in declaration_examples {
         println!("\n🔍 Testing Statement: {}", source);
         
         let mut tokens = tokenize(source);
