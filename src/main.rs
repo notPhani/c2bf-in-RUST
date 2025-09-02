@@ -828,20 +828,23 @@ fn parse_program(source: &str) -> Option<ASTNode> {
 }
 
 //------------------------------------------Semantic Analysis & IR-------------------------------------------
-
+/* 
+fn runAST(ast :&mut Vec<ASTNode>) -> Option<Vec<ASTNode>>{
+    //This function will run the semantic analysis and generate the IR simultaneously
+    //
+}
+    */
 //----------------------------------------------Code Generation----------------------------------------------
 
 fn main() {
     let full_program = r#"
-        int x = 42;
-        int factorial(int n) { 
-            if (n <= 1) return 1; 
-            return n * factorial(n - 1); 
-        }
-        int main() { 
-            int result = factorial(5);
-            return result; 
-        }
+        int x = 10;
+
+void foo() {
+    int y = x + 5;
+    z = y + 1;
+}
+
     "#;
     
     match parse_program(full_program) {
