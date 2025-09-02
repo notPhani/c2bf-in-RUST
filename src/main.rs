@@ -97,12 +97,7 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 #[derive(Debug, Clone, PartialEq)]
 enum ASTNode {
-     /* 
     Program(Vec<ASTNode>),//yet to implement
-    
-    
-    ArrayElement { name: String, index: Box<ASTNode> },
-*/
     Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
     VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
     For { init: Box<ASTNode>, condition: Box<ASTNode>, increment: Box<ASTNode>, body: Box<ASTNode> },
@@ -816,49 +811,43 @@ fn parse_dec_or_func(tokens: &mut Vec<Token>)-> Option<ASTNode>{
         _ => None,
     }
 }
+
+fn parse_program(source: &str) -> Option<ASTNode> {
+    let mut tokens = tokenize(source);
+    let mut declarations = Vec::new();
+    
+    while !tokens.is_empty() {
+        if let Some(decl) = parse_statement(&mut tokens) {
+            declarations.push(decl);
+        } else {
+            return None; // Parse error
+        }
+    }
+    
+    Some(ASTNode::Program(declarations))
+}
+
 //------------------------------------------Semantic Analysis & IR------------------------------------------
 //------------------------------------------Code Generation------------------------------------------
 
 fn main() {
-   // Add these to your main() test suite
-let declaration_examples = vec![
-    // Variable declarations
-    "int x;",
-    "int x = 42;",
-    "char c = 'a';",
-    "int arrs[10];",
-    "int matrix[5][3];",
-    "int nums[4] = {1, 2, 3, 4, 9*6};",
-    
-    // Function declarations
-    "int main();",
-    "int add(int a, int b);",
-    "char getChar(int index, char default);",
-    
-    // Function definitions
-    "int main() { return 0; }",
-    "int add(int a, int b) { return a + b; }",
-    "int factorial(int n) { if (n <= 1) return 1; return n * factorial(n - 1); }",
-];
-
-    
-    for source in declaration_examples {
-        println!("\n🔍 Testing Statement: {}", source);
-        
-        let mut tokens = tokenize(source);
-        match parse_statement(&mut tokens) {
-            Some(ast) => {
-                println!("✅ Success!");
-                println!("AST: {:#?}", ast);
-            },
-            None => {
-                println!("❌ Failed to parse");
-            }
+    let full_program = r#"
+        int x = 42;
+        int factorial(int n) { 
+            if (n <= 1) return 1; 
+            return n * factorial(n - 1); 
         }
-        
-        if !tokens.is_empty() {
-            println!("⚠️  Remaining tokens: {:?}", tokens);
+        int main() { 
+            int result = factorial(5);
+            return result; 
         }
+    "#;
+    
+    match parse_program(full_program) {
+        Some(ast) => {
+            println!("🎉 FULL PROGRAM PARSED!");
+            println!("AST: {:#?}", ast);
+        },
+        None => println!("❌ Parse error"),
     }
 }
-
