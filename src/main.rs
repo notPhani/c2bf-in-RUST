@@ -39,7 +39,7 @@ fn tokenize(source: &str) -> Vec<Token> {
             }
             let keyword = match ident.as_str() {
                 "int" => Some(Keywords::Int), "char" => Some(Keywords::Char), "string" => Some(Keywords::String), 
-                "arr" => Some(Keywords::Arr), "if" => Some(Keywords::If), "else" => Some(Keywords::Else), 
+                "ARRAY" => Some(Keywords::Arr), "if" => Some(Keywords::If), "else" => Some(Keywords::Else), 
                 "for" => Some(Keywords::For), "while" => Some(Keywords::While), "putchar" => Some(Keywords::PutChar), 
                 "getchar" => Some(Keywords::GetChar), "return" => Some(Keywords::Return), "function" => Some(Keywords::Function),
                 "break" => Some(Keywords::Break), "continue" => Some(Keywords::Continue), _ => None,
@@ -97,6 +97,7 @@ fn tokenize(source: &str) -> Vec<Token> {
 
 #[derive(Debug, Clone, PartialEq)]
 enum ASTNode {
+    //ScopeLabel{label :String}, // This will serve no purpose in the AST but will help in code generation and semen anal, Scrapped idea
     Program(Vec<ASTNode>),//yet to implement
     Function { return_type: Keywords, name: String, params: Vec<(Keywords, String)>, body: Box<ASTNode> },
     VariableDeclaration { var_type: Keywords, name: String, array_dims: Option<Vec<usize>>, initial_value: Option<Box<ASTNode>> },
@@ -104,6 +105,7 @@ enum ASTNode {
     Return(Option<Box<ASTNode>>),
     While { condition: Box<ASTNode>, body: Box<ASTNode> },
     If { condition: Box<ASTNode>, then_branch: Box<ASTNode>, else_branch: Option<Box<ASTNode>> },
+    PutChar{ expr: Box<ASTNode> },
     Break,
     Continue,
     Assignment { target: Box<ASTNode>, value: Box<ASTNode> },
@@ -436,28 +438,19 @@ fn parse_block(tokens: &mut Vec<Token>)->Option<ASTNode>{
 }
 
 fn parse_if(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    if tokens.first() != Some(&Token::Keyword(Keywords::If)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Keyword(Keywords::If) { return None; }
+    tokens.remove(0); // consume "if"
 
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
-        return None;
-    }
-    tokens.remove(0);
-
-    let condition = parse_expression(tokens)?; // already an ASTNode
-
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Punctuator(Punctuators::LeftParen) { return None; }
+    tokens.remove(0); // consume "("
+    let condition = parse_expression(tokens)?;
+    if tokens.first()? != &Token::Punctuator(Punctuators::RightParen) { return None; }
+    tokens.remove(0); // consume ")"
 
     let then_branch = parse_statement(tokens)?;
     let else_branch = if tokens.first() == Some(&Token::Keyword(Keywords::Else)) {
-        tokens.remove(0);
-        let else_stmt = parse_statement(tokens)?;
-        Some(Box::new(else_stmt))
+        tokens.remove(0); // consume "else"
+        Some(Box::new(parse_statement(tokens)?))
     } else {
         None
     };
@@ -469,101 +462,53 @@ fn parse_if(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     })
 }
 
-
 fn parse_while(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    if tokens.first() != Some(&Token::Keyword(Keywords::While)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Keyword(Keywords::While) { return None; }
+    tokens.remove(0); // consume "while"
 
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
-        return None;
-    }
-    tokens.remove(0);
-
-    let condition = parse_expression(tokens)?; // ASTNode
-
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Punctuator(Punctuators::LeftParen) { return None; }
+    tokens.remove(0); // consume "("
+    let condition = parse_expression(tokens)?;
+    if tokens.first()? != &Token::Punctuator(Punctuators::RightParen) { return None; }
+    tokens.remove(0); // consume ")"
 
     let body = parse_statement(tokens)?;
-
-    Some(ASTNode::While {
-        condition: Box::new(condition),
-        body: Box::new(body),
-    })
+    Some(ASTNode::While { condition: Box::new(condition), body: Box::new(body) })
 }
-
 
 fn parse_return(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    if tokens.first() != Some(&Token::Keyword(Keywords::Return)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Keyword(Keywords::Return) { return None; }
+    tokens.remove(0); // consume "return"
 
-    if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-        tokens.remove(0);
-        Some(ASTNode::Return(None)) // void return
+    let expr = if tokens.first()? != &Token::Punctuator(Punctuators::Semicolon) {
+        Some(Box::new(parse_expression(tokens)?))
     } else {
-        let expr = parse_expression(tokens)?;
-        if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-            tokens.remove(0);
-        }
-        Some(ASTNode::Return(Some(Box::new(expr))))
+        None
+    };
+
+    if tokens.first()? == &Token::Punctuator(Punctuators::Semicolon) {
+        tokens.remove(0); // consume ";"
     }
+    Some(ASTNode::Return(expr))
 }
 
+
 fn parse_for(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    if tokens.first() != Some(&Token::Keyword(Keywords::For)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Keyword(Keywords::For) { return None; }
+    tokens.remove(0); // consume "for"
 
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
-        return None;
-    }
-    tokens.remove(0);
+    if tokens.first()? != &Token::Punctuator(Punctuators::LeftParen) { return None; }
+    tokens.remove(0); // consume "("
 
-    // init
-    let init = if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-        ASTNode::Empty
-    } else {
-        parse_assignment(tokens)?
-    };
-
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::Semicolon)) {
-        return None;
-    }
-    tokens.remove(0);
-
-    // condition
-    let condition = if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
-        ASTNode::LiteralInt(1)
-    } else {
-        parse_expression(tokens)?
-    };
-
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::Semicolon)) {
-        return None;
-    }
-    tokens.remove(0);
-
-    // increment
-    let increment = if tokens.first() == Some(&Token::Punctuator(Punctuators::RightParen)) {
-        ASTNode::Empty
-    } else {
-        parse_assignment(tokens)?
-    };
-
-    if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
-        return None;
-    }
-    tokens.remove(0);
+    let init = parse_statement(tokens)?;
+    let condition = parse_expression(tokens)?;
+    if tokens.first()? != &Token::Punctuator(Punctuators::Semicolon) { return None; }
+    tokens.remove(0); // consume ";"
+    let increment = parse_expression(tokens)?;
+    if tokens.first()? != &Token::Punctuator(Punctuators::RightParen) { return None; }
+    tokens.remove(0); // consume ")"
 
     let body = parse_statement(tokens)?;
-
     Some(ASTNode::For {
         init: Box::new(init),
         condition: Box::new(condition),
@@ -571,6 +516,7 @@ fn parse_for(tokens: &mut Vec<Token>) -> Option<ASTNode> {
         body: Box::new(body),
     })
 }
+
 
 fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     match tokens.first()? {
@@ -597,6 +543,22 @@ fn parse_statement(tokens: &mut Vec<Token>) -> Option<ASTNode> {
         Token::Keyword(Keywords::Int) | Token::Keyword(Keywords::Char) | 
         Token::Keyword(Keywords::String) | Token::Keyword(Keywords::Arr) => {
             parse_dec_or_func(tokens)
+        },
+        Token::Keyword(Keywords::PutChar) => {
+            tokens.remove(0); // consume 'putchar'
+            if tokens.first() != Some(&Token::Punctuator(Punctuators::LeftParen)) {
+                return None;
+            }
+            tokens.remove(0); // consume '('
+            let expr = parse_expression(tokens)?;
+            if tokens.first() != Some(&Token::Punctuator(Punctuators::RightParen)) {
+                return None;
+            }
+            tokens.remove(0); // consume ')'
+            if tokens.first() == Some(&Token::Punctuator(Punctuators::Semicolon)) {
+                tokens.remove(0); // consume ';'
+            }
+            Some(ASTNode::PutChar { expr: Box::new(expr) })
         },
         _ => {
             // Expression/assignment statements
@@ -828,30 +790,158 @@ fn parse_program(source: &str) -> Option<ASTNode> {
 }
 
 //------------------------------------------Semantic Analysis & IR-------------------------------------------
-/* 
-fn runAST(ast :&mut Vec<ASTNode>) -> Option<Vec<ASTNode>>{
-    //This function will run the semantic analysis and generate the IR simultaneously
-    //
-}
-    */
-//----------------------------------------------Code Generation----------------------------------------------
+// This part of the compiler will deal with the semantic analysis and IR generation
+// We will do the semantic analysis and IR generation in a single pass
+// We will use the AST generated by the parser and then run through it to generate the IR
+// And we will be using something O(1) unlike the parser and lexer whch were O(n^2) because of the vector operations
+// We will do something Scope of symbols and types and program of Scopes as lookup tables
+// We will also do type checking and type inference here
+// Since we already did the constant folding in the parser we can skip that part here and do something dead code elimination here
+// Then we immediately generate the IR from the AST pass
+//Bad idea, we will do it in two passes
+    // This function should label the AST nodes with their types and scopes
+    // I have a different convention in mind for the scopes and thier labels for eg:
+    // we have global scope which symbols like vars, functions outside the main function, hence everything outside main is global scope
+    // the we have the function scope which is the scope of the function and its parameters
+    // These will be labelled as global.function_name, and in everycase it's gonna be global.main for the main function
+    // then we have the block scope which is the scope of the block and its variables
+    // These will be labelled as global.function_name.block_number, and in everycase it's gonna be global.main.block_number for the main function
+    // The block number will be incremented for every block we encounter in the function
+    // We will use a stack to keep track of the current scope and its parent scopes
+    // We will also keep track of the variables and their types
+    // We will see about the scope checking and everything in the run_ast function, this is just to label the AST nodes.
+    // Since we passing the ast as the input, we can add a NODE called, no-op which will be used to label the nodes
 
-fn main() {
-    let full_program = r#"
-        int x = 10;
-
-void foo() {
-    int y = x + 5;
-    z = y + 1;
-}
-
-    "#;
+fn run_ast(ast: &mut Vec<ASTNode>)->Option<Vec<ASTNode>>{
     
+}
+//----------------------------------------------Code Generation----------------------------------------------
+fn main() {
+    // Test cases for the lexer and parser
+    let samples: &[(&str, &str)] = &[
+        // Simple declarations
+        ("Decl: int x;", "int x;"),
+        ("Decl+init: int x = 42;", "int x = 42;"),
+        ("Char init: char c = 'a';", "char c = 'a';"),
+
+        // Expressions and assignments
+        ("Expr assign: x = 1 + 2 * 3;", "x = 1 + 2 * 3;"),
+        ("Ternary: y = a ? b : c;", "y = a ? b : c;"),
+
+        // Arrays
+        ("Array decl: int arrs[10];", "int arrs[10];"),
+        ("Array 2D: int m[3][2];", "int m[3][2];"),
+        ("Array init list: int nums[4] = {1, 2, 3, 4};", "int nums[4] = {1, 2, 3, 4};"),
+        ("Array write: arr[2] = 7;", "arr[2] = 7;"),
+
+        // Control flow
+        ("If-else:", "if (x < 10) x = x + 1; else x = 0;"),
+        ("While:", "while (i < 5) { i = i + 1; }"),
+        ("For:", "for (i = 0; i < 3; i = i + 1) sum = sum + i;"),
+
+        // Returns, break, continue
+        ("Return void:", "return;"),
+        ("Return expr:", "return 123;"),
+        ("Break/Continue:", "{ while (1) { break; continue; } }"),
+
+        // Functions
+        ("Func decl:", "int add(int a, int b);"),
+        ("Func def:", "int add(int a, int b) { return a + b; }"),
+        ("Call:", "result = add(3, 4);"),
+
+        // Full program snippet
+        ("Program: fib + main",
+r#"
+int fib(int n) {
+    if (n <= 1) return n;
+    return fib(n - 1) + fib(n - 2);
+}
+
+int main() {
+    int i = 0;
+    int sum = 0;
+    while (i < 6) {
+        sum = sum + fib(i);
+        i = i + 1;
+    }
+    //putchar(sum + 48);
+    return 0;
+}
+"#),
+    ];
+
+    for (label, source) in samples {
+        println!("\n==============================");
+        println!("🔍 Test: {}", label);
+        println!("------------------------------");
+        println!("Source:\n{}", source);
+
+        // Lex
+        let mut tokens = tokenize(source);
+        //println!("\nTOKENS ({}):\n{:#?}", tokens.len(), tokens);
+
+        // Parse (statement-level or program-level)
+        // Heuristic: if it contains function definition or multiple top-level items, use parse_program.
+        let looks_like_program = source.contains("int ") && source.contains("(") && source.contains(")") && source.contains("{");
+
+        if looks_like_program {
+            println!("\nParsing as Program...");
+            match parse_program(source) {
+                Some(ast) => {
+                    println!("✅ Parsed Program AST:\n{:#?}", ast);
+                }
+                None => {
+                    println!("❌ Failed to parse program");
+                }
+            }
+        } else {
+            println!("\nParsing as Statement...");
+            match parse_statement(&mut tokens) {
+                Some(ast) => {
+                    println!("✅ Parsed Statement AST:\n{:#?}", ast);
+                }
+                None => {
+                    println!("❌ Failed to parse statement");
+                }
+            }
+
+            if !tokens.is_empty() {
+                println!("⚠️ Remaining tokens after parse:\n{:#?}", tokens);
+            }
+        }
+    }
+
+    // Bonus: single big program pass demonstrating end-to-end parse_program with token inspection
+    println!("\n==============================");
+    println!("🔭 End-to-end program parse with token pre-check");
+    println!("==============================");
+
+    let full_program = r#"
+int main() {
+    int x = 1;
+    int y = 2;
+    int z = 3;
+
+    // nested ternaries test
+    int result = (x < y) ? ( (y < z) ? 'A' : 'B' ) : 'C';
+
+    putchar(result);
+
+    return 0;
+}
+
+"#;
+
+    //let tokens = tokenize(full_program);
+    //println!("TOKENS ({}):\n{:#?}", tokens.len(), tokens);
+
     match parse_program(full_program) {
         Some(ast) => {
             println!("🎉 FULL PROGRAM PARSED!");
             println!("AST: {:#?}", ast);
-        },
-        None => println!("❌ Parse error"),
+        }
+        None => {
+            println!("❌ Failed to parse full program");
+        }
     }
 }
