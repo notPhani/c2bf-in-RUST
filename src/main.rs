@@ -1,5 +1,4 @@
-use core::hash;
-use std::hash::Hash;
+use std::collections::HashMap;
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -814,7 +813,7 @@ fn parse_program(source: &str) -> Option<ASTNode> {
     // We will also keep track of the variables and their types
     // We will see about the scope checking and everything in the run_ast function, this is just to label the AST nodes.
     // Since we passing the ast as the input, we can add a NODE called, no-op which will be used to label the nodes
-use std::collections::HashMap;
+
 
 #[derive(Debug, Clone)]
 struct Scope {
