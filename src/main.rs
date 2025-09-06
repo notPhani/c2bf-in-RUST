@@ -1,3 +1,6 @@
+use core::hash;
+use std::hash::Hash;
+
 
 #[derive(Debug, Clone, PartialEq)]
 enum Keywords { Int, Char, String, Arr, If, Else, For, While, PutChar, GetChar, Return, Function, Break, Continue }
@@ -811,6 +814,52 @@ fn parse_program(source: &str) -> Option<ASTNode> {
     // We will also keep track of the variables and their types
     // We will see about the scope checking and everything in the run_ast function, this is just to label the AST nodes.
     // Since we passing the ast as the input, we can add a NODE called, no-op which will be used to label the nodes
+use std::collections::HashMap;
+
+#[derive(Debug, Clone)]
+struct Scope {
+    label: String,
+    variables: HashMap<String, VarInfo>,
+    functions: HashMap<String, FuncInfo>,
+}
+
+#[derive(Debug, Clone)]
+struct VarInfo {
+    var_type: Keywords, // e.g. Int, Char, etc.
+    is_array: bool,
+    array_dims: Option<Vec<usize>>,
+    initial_value: Option<Box<ASTNode>>,
+}
+
+#[derive(Debug, Clone)]
+struct FuncInfo {
+    return_type: Keywords,
+    params: Vec<(Keywords, String)>,
+    body: Box<ASTNode>,
+}
+
+impl Scope {
+    fn in_scope(&self,name: &str,all_scopes: &HashMap<String, Scope>,) -> bool {
+        let parts: Vec<&str> = self.label.split('.').collect();
+        let mut valid_scopes = Vec::new();
+
+        // Build all prefix scopes
+        for i in 1..=parts.len() {
+            let prefix = parts[0..i].join(".");
+            valid_scopes.push(prefix);
+        }
+        for scope_label in valid_scopes.iter().rev() {
+            if let Some(scope) = all_scopes.get(scope_label) {
+                if scope.variables.contains_key(name) || scope.functions.contains_key(name) {
+                    return true;
+                }
+            }
+        }
+
+        false
+    }
+}
+
 
 fn run_ast(ast: &mut Vec<ASTNode>)->Option<Vec<ASTNode>>{
     
