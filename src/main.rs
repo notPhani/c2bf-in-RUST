@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, hash::Hash};
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -838,7 +838,7 @@ struct FuncInfo {
 }
 
 impl Scope {
-    fn in_scope(&self,name: &str,all_scopes: &HashMap<String, Scope>,) -> bool {
+    fn in_scope(&self, name: &str, all_scopes: &HashMap<String, Scope>,) -> bool {
         let parts: Vec<&str> = self.label.split('.').collect();
         let mut valid_scopes = Vec::new();
 
@@ -859,111 +859,18 @@ impl Scope {
     }
 }
 
-
 fn run_ast(ast: &mut Vec<ASTNode>)->Option<Vec<ASTNode>>{
-    
+    // Okay simple function, Just append the variables and functions to the global scope whilst type checking and shit
+    // Break and add a new scope for every function and block
+    // Carefull with block numbers and if statements cuz, incremenet variable is in the if block not accessible elsewhere
+    // Maintain all_scopes hashmap to keep track of all scopes
+
+    let mut all_scopes: HashMap<String, Scope> = HashMap::new();
+
+
 }
 //----------------------------------------------Code Generation----------------------------------------------
 fn main() {
-    // Test cases for the lexer and parser
-    let samples: &[(&str, &str)] = &[
-        // Simple declarations
-        ("Decl: int x;", "int x;"),
-        ("Decl+init: int x = 42;", "int x = 42;"),
-        ("Char init: char c = 'a';", "char c = 'a';"),
-
-        // Expressions and assignments
-        ("Expr assign: x = 1 + 2 * 3;", "x = 1 + 2 * 3;"),
-        ("Ternary: y = a ? b : c;", "y = a ? b : c;"),
-
-        // Arrays
-        ("Array decl: int arrs[10];", "int arrs[10];"),
-        ("Array 2D: int m[3][2];", "int m[3][2];"),
-        ("Array init list: int nums[4] = {1, 2, 3, 4};", "int nums[4] = {1, 2, 3, 4};"),
-        ("Array write: arr[2] = 7;", "arr[2] = 7;"),
-
-        // Control flow
-        ("If-else:", "if (x < 10) x = x + 1; else x = 0;"),
-        ("While:", "while (i < 5) { i = i + 1; }"),
-        ("For:", "for (i = 0; i < 3; i = i + 1) sum = sum + i;"),
-
-        // Returns, break, continue
-        ("Return void:", "return;"),
-        ("Return expr:", "return 123;"),
-        ("Break/Continue:", "{ while (1) { break; continue; } }"),
-
-        // Functions
-        ("Func decl:", "int add(int a, int b);"),
-        ("Func def:", "int add(int a, int b) { return a + b; }"),
-        ("Call:", "result = add(3, 4);"),
-
-        // Full program snippet
-        ("Program: fib + main",
-r#"
-int fib(int n) {
-    if (n <= 1) return n;
-    return fib(n - 1) + fib(n - 2);
-}
-
-int main() {
-    int i = 0;
-    int sum = 0;
-    while (i < 6) {
-        sum = sum + fib(i);
-        i = i + 1;
-    }
-    //putchar(sum + 48);
-    return 0;
-}
-"#),
-    ];
-
-    for (label, source) in samples {
-        println!("\n==============================");
-        println!("🔍 Test: {}", label);
-        println!("------------------------------");
-        println!("Source:\n{}", source);
-
-        // Lex
-        let mut tokens = tokenize(source);
-        //println!("\nTOKENS ({}):\n{:#?}", tokens.len(), tokens);
-
-        // Parse (statement-level or program-level)
-        // Heuristic: if it contains function definition or multiple top-level items, use parse_program.
-        let looks_like_program = source.contains("int ") && source.contains("(") && source.contains(")") && source.contains("{");
-
-        if looks_like_program {
-            println!("\nParsing as Program...");
-            match parse_program(source) {
-                Some(ast) => {
-                    println!("✅ Parsed Program AST:\n{:#?}", ast);
-                }
-                None => {
-                    println!("❌ Failed to parse program");
-                }
-            }
-        } else {
-            println!("\nParsing as Statement...");
-            match parse_statement(&mut tokens) {
-                Some(ast) => {
-                    println!("✅ Parsed Statement AST:\n{:#?}", ast);
-                }
-                None => {
-                    println!("❌ Failed to parse statement");
-                }
-            }
-
-            if !tokens.is_empty() {
-                println!("⚠️ Remaining tokens after parse:\n{:#?}", tokens);
-            }
-        }
-    }
-
-    // Bonus: single big program pass demonstrating end-to-end parse_program with token inspection
-    println!("\n==============================");
-    println!("🔭 End-to-end program parse with token pre-check");
-    println!("==============================");
-
     let full_program = r#"
 int main() {
     int x = 1;
