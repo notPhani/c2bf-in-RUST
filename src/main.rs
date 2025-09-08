@@ -1,4 +1,4 @@
-use std::{collections::HashMap, hash::Hash};
+use std::{collections::HashMap};
 
 
 #[derive(Debug, Clone, PartialEq)]
@@ -801,102 +801,97 @@ fn parse_program(source: &str) -> Option<ASTNode> {
 // Since we already did the constant folding in the parser we can skip that part here and do something dead code elimination here
 // Then we immediately generate the IR from the AST pass
 //Bad idea, we will do it in two passes
-    // This function should label the AST nodes with their types and scopes
-    // I have a different convention in mind for the scopes and thier labels for eg:
-    // we have global scope which symbols like vars, functions outside the main function, hence everything outside main is global scope
-    // the we have the function scope which is the scope of the function and its parameters
-    // These will be labelled as global.function_name, and in everycase it's gonna be global.main for the main function
-    // then we have the block scope which is the scope of the block and its variables
-    // These will be labelled as global.function_name.block_number, and in everycase it's gonna be global.main.block_number for the main function
-    // The block number will be incremented for every block we encounter in the function
-    // We will use a stack to keep track of the current scope and its parent scopes
-    // We will also keep track of the variables and their types
-    // We will see about the scope checking and everything in the run_ast function, this is just to label the AST nodes.
-    // Since we passing the ast as the input, we can add a NODE called, no-op which will be used to label the nodes
-
-
-#[derive(Debug, Clone)]
-struct Scope {
-    label: String,
-    variables: HashMap<String, VarInfo>,
-    functions: HashMap<String, FuncInfo>,
-}
+// This function should label the AST nodes with their types and scopes
+// I have a different convention in mind for the scopes and thier labels for eg:
+// we have global scope which symbols like vars, functions outside the main function, hence everything outside main is global scope
+// the we have the function scope which is the scope of the function and its parameters
+// These will be labelled as global.function_name, and in everycase it's gonna be global.main for the main function
+// then we have the block scope which is the scope of the block and its variables
+// These will be labelled as global.function_name.block_number, and in everycase it's gonna be global.main.block_number for the main function
+// The block number will be incremented for every block we encounter in the function
+// We will use a stack to keep track of the current scope and its parent scopes
+// We will also keep track of the variables and their types
+// We will see about the scope checking and everything in the run_ast function, this is just to label the AST nodes.
+// Since we passing the ast as the input, we can add a NODE called, no-op which will be used to label the nodes
 
 #[derive(Debug, Clone)]
 struct VarInfo {
-    var_type: Keywords, // e.g. Int, Char, etc.
-    is_array: bool,
-    array_dims: Option<Vec<usize>>,
-    initial_value: Option<Box<ASTNode>>,
+    var_type: Keywords,
+    foldable_value: Option<ASTNode>,   // For constant propagation
+    is_array: bool,                   // Array type checking
+    array_dims: Option<Vec<usize>>,   // Array bounds validation
+    initial_value: Option<Box<ASTNode>>, // Initialization storage
 }
 
 #[derive(Debug, Clone)]
 struct FuncInfo {
-    return_type: Keywords,
-    params: Vec<(Keywords, String)>,
-    body: Box<ASTNode>,
+    return_type: Keywords,            // Function return type
+    params: Vec<(Keywords, String)>,  // Parameter validation & mapping
+    body: Box<ASTNode>,              // Function inlining source
+}
+#[derive(Debug, Clone)]
+struct Scope {
+    label: String,                   // Hierarchical scope identification  
+    variables: HashMap<String, VarInfo>, // Variable symbol table
+    functions: HashMap<String, FuncInfo>, // Function symbol table
+    inside_loop: bool,               // Loop context for break/continue
 }
 
-impl Scope {
-    fn in_scope(&self, name: &str, all_scopes: &HashMap<String, Scope>,) -> bool {
-        let parts: Vec<&str> = self.label.split('.').collect();
-        let mut valid_scopes = Vec::new();
-
-        // Build all prefix scopes
-        for i in 1..=parts.len() {
-            let prefix = parts[0..i].join(".");
-            valid_scopes.push(prefix);
-        }
-        for scope_label in valid_scopes.iter().rev() {
-            if let Some(scope) = all_scopes.get(scope_label) {
-                if scope.variables.contains_key(name) || scope.functions.contains_key(name) {
-                    return true;
-                }
-            }
-        }
-
-        false
-    }
+// Error types for semantic analysis
+#[derive(Debug, Clone)]
+enum SemanticError {
+    UndefinedVariable(String),
+    UndefinedFunction(String),
+    TypeMismatch { expected: Keywords, found: Keywords },
+    DuplicateDeclaration(String),
+    ArgumentCountMismatch { expected: usize, found: usize },
+    BreakOutsideLoop,
+    ContinueOutsideLoop,
+    ReturnTypeMismatch { expected: Keywords, found: Keywords },
+    ArrayIndexNotInt,
+    InvalidArraySize,
 }
 
-fn run_ast(ast: &mut Vec<ASTNode>)->Option<Vec<ASTNode>>{
-    // Okay simple function, Just append the variables and functions to the global scope whilst type checking and shit
-    // Break and add a new scope for every function and block
-    // Carefull with block numbers and if statements cuz, incremenet variable is in the if block not accessible elsewhere
-    // Maintain all_scopes hashmap to keep track of all scopes
 
-    let mut all_scopes: HashMap<String, Scope> = HashMap::new();
-
-
-}
-//----------------------------------------------Code Generation----------------------------------------------
 fn main() {
-    let full_program = r#"
+    let source_code = r#"
+int square(int x) {
+    return x * x;
+}
+
+int add_and_square(int a) {
+    int s = a;
+    return square(s);
+}
+
 int main() {
-    int x = 1;
-    int y = 2;
-    int z = 3;
-
-    // nested ternaries test
-    int result = (x < y) ? ( (y < z) ? 'A' : 'B' ) : 'C';
-
-    putchar(result);
-
-    return 0;
+    int result = add_and_square(10);
+    return result;
 }
 
 "#;
 
-    //let tokens = tokenize(full_program);
-    //println!("TOKENS ({}):\n{:#?}", tokens.len(), tokens);
+    println!("== Tokens ==");
+    let tokens = tokenize(source_code);
+    println!("{:?}\n", tokens);
 
-    match parse_program(full_program) {
-        Some(ast) => {
-            println!("🎉 FULL PROGRAM PARSED!");
-            println!("AST: {:#?}", ast);
+    println!("== AST Before Semantic Analysis ==");
+    if let Some(ast) = parse_program(source_code) {
+        println!("{:?}\n", ast);
+
+        println!("== AST After Semantic Analysis ==");
+        match run_semantic_analysis(&ast) {
+            Ok(analyzed_ast) => {
+                println!("{:?}\n", analyzed_ast);
+            },
+            Err(errors) => {
+                println!("Semantic errors detected:");
+                for error in errors {
+                    println!("{:?}", error);
+                }
+            }
         }
-        None => {
-            println!("❌ Failed to parse full program");
-        }
+    } else {
+        println!("Parsing failed.");
     }
 }
