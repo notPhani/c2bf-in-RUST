@@ -908,8 +908,6 @@ impl std::fmt::Display for SemanticError {
     }
 }
 
-
-
 fn get_scopes(current_scope: &str) -> Vec<String> {
     let parts: Vec<&str> = current_scope.split('.').collect(); 
     (1..=parts.len())
