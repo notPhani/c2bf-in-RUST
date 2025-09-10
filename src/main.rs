@@ -852,46 +852,21 @@ enum SemanticError {
     InvalidArraySize,
 }
 
-
-fn main() {
-    let source_code = r#"
-int square(int x) {
-    return x * x;
+fn get_scopes(current_scope: &str) -> Vec<String> {
+    let parts: Vec<&str> = current_scope.split('.').collect(); 
+    (1..=parts.len())
+        .map(|i| parts[..i].join("."))
+        .collect()
 }
 
-int add_and_square(int a) {
-    int s = a;
-    return square(s);
-}
-
-int main() {
-    int result = add_and_square(10);
-    return result;
-}
-
-"#;
-
-    println!("== Tokens ==");
-    let tokens = tokenize(source_code);
-    println!("{:?}\n", tokens);
-
-    println!("== AST Before Semantic Analysis ==");
-    if let Some(ast) = parse_program(source_code) {
-        println!("{:?}\n", ast);
-
-        println!("== AST After Semantic Analysis ==");
-        match run_semantic_analysis(&ast) {
-            Ok(analyzed_ast) => {
-                println!("{:?}\n", analyzed_ast);
-            },
-            Err(errors) => {
-                println!("Semantic errors detected:");
-                for error in errors {
-                    println!("{:?}", error);
-                }
+fn in_scope(current_scope: &mut Scope, all_scopes: &mut Vec<Scope>, ident : &String) -> Option<VarInfo>{
+    let scope_labels = get_scopes(&current_scope.label);
+    for label in scope_labels.iter().rev() {
+        if let Some(scope) = all_scopes.iter().find(|s| &s.label == label) {
+            if let Some(var_info) = scope.variables.get(ident) {
+                return Some(var_info.clone());
             }
         }
-    } else {
-        println!("Parsing failed.");
     }
+    None
 }
