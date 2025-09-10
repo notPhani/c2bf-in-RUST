@@ -896,7 +896,7 @@ impl std::fmt::Display for SemanticError {
                 write!(f, "This 'continue' has nowhere to go. Loops only, buddy.")
             },
             SemanticError::ReturnTypeMismatch { expected, found } => {
-                write!(f, "This return’s flavor off. Expected '{:?}', got '{:?}'. Get your types right!", expected, found)
+                write!(f, "This returns flavor off. Expected '{:?}', got '{:?}'. Get your types right!", expected, found)
             },
             SemanticError::ArrayIndexNotInt => {
                 write!(f, "This array index isnt an integer. Arrays like whole numbers only.")
