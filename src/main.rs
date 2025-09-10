@@ -834,6 +834,7 @@ That is my idea, what do u think??
  */
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct VarInfo {
     var_type: Keywords,
     foldable_value: Option<ASTNode>,   // For constant propagation
@@ -843,6 +844,7 @@ struct VarInfo {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct FuncInfo {
     return_type: Keywords,            // Function return type
     params: Vec<(Keywords, String)>,  // Parameter validation & mapping
@@ -866,7 +868,7 @@ enum SemanticError {
     ArgumentCountMismatch { expected: usize, found: usize },
     BreakOutsideLoop,
     ContinueOutsideLoop,
-    ReturnTypeMismatch { expected: Keywords, found: Keywords },
+    //ReturnTypeMismatch { expected: Keywords, found: Keywords },
     ArrayIndexNotInt,
     InvalidArraySize,
 }
@@ -895,9 +897,6 @@ impl std::fmt::Display for SemanticError {
             SemanticError::ContinueOutsideLoop => {
                 write!(f, "This 'continue' has nowhere to go. Loops only, buddy.")
             },
-            SemanticError::ReturnTypeMismatch { expected, found } => {
-                write!(f, "This returns flavor off. Expected '{:?}', got '{:?}'. Get your types right!", expected, found)
-            },
             SemanticError::ArrayIndexNotInt => {
                 write!(f, "This array index isnt an integer. Arrays like whole numbers only.")
             },
@@ -915,11 +914,465 @@ fn get_scopes(current_scope: &str) -> Vec<String> {
         .collect()
 }
 
-fn in_scope(current_scope: &mut Scope, all_scopes: &mut Vec<Scope>, ident : &String) -> Option<VarInfo>{
-    let scope_labels = get_scopes(&current_scope.label);
+fn run_ast(ast: &mut Vec<ASTNode>) -> Result<Vec<ASTNode>, SemanticError> {
+    let mut all_scopes = Vec::new();
+    let mut scope_stack = Vec::new();
+    let mut block_counter = 0;
+    
+    // Initialize global scope
+    let global_scope = Scope {
+        label: "global".to_string(),
+        variables: HashMap::new(),
+        functions: HashMap::new(),
+        inside_loop: false,
+    };
+    all_scopes.push(global_scope.clone());
+    scope_stack.push("global".to_string());
+    
+    let mut rebuilt_ast = Vec::new();
+    
+    for node in ast.iter() {
+        let processed_node = process_node(
+            node.clone(),
+            &mut all_scopes,
+            &mut scope_stack,
+            &mut block_counter,
+        )?;
+        rebuilt_ast.push(processed_node);
+    }
+    
+    Ok(rebuilt_ast)
+}
+
+fn process_node(
+    node: ASTNode,
+    all_scopes: &mut Vec<Scope>,
+    scope_stack: &mut Vec<String>,
+    block_counter: &mut usize,
+) -> Result<ASTNode, SemanticError> {
+    match node {
+        // Variable declarations - add to current scope
+        ASTNode::VariableDeclaration { var_type, name, array_dims, initial_value } => {
+            let current_scope_label = scope_stack.last().unwrap().clone();
+            
+            // Check for duplicate declaration in CURRENT scope only (shadowing allowed)
+            if let Some(current_scope) = all_scopes.iter().find(|s| s.label == current_scope_label) {
+                if current_scope.variables.contains_key(&name) {
+                    return Err(SemanticError::DuplicateDeclaration(name));
+                }
+            }
+            
+            // Validate array dimensions
+            let is_array = array_dims.is_some();
+            if let Some(ref dims) = array_dims {
+                for &size in dims {
+                    if size == 0 {
+                        return Err(SemanticError::InvalidArraySize);
+                    }
+                }
+            }
+            
+            // Process initial value if present
+            let processed_initial = if let Some(init_val) = initial_value {
+                let processed = process_node(*init_val, all_scopes, scope_stack, block_counter)?;
+                
+                // Type check the initial value
+                let init_type = get_expr_type(&processed, all_scopes, scope_stack)?;
+                if !types_compatible(&var_type, &init_type) {
+                    return Err(SemanticError::TypeMismatch { 
+                        expected: var_type, 
+                        found: init_type 
+                    });
+                }
+                
+                Some(Box::new(processed))
+            } else {
+                None
+            };
+            
+            // Add to symbol table
+            let var_info = VarInfo {
+                var_type: var_type.clone(),
+                foldable_value: None,
+                is_array,
+                array_dims: array_dims.clone(),
+                initial_value: processed_initial.clone(),
+            };
+            
+            // Find and update the current scope
+            if let Some(current_scope) = all_scopes.iter_mut().find(|s| s.label == current_scope_label) {
+                current_scope.variables.insert(name.clone(), var_info);
+            }
+            
+            Ok(ASTNode::VariableDeclaration { var_type, name, array_dims, initial_value: processed_initial })
+        },
+        
+        // Function declarations - add to current scope
+        ASTNode::Function { return_type, name, params, body } => {
+            let current_scope_label = scope_stack.last().unwrap().clone();
+            
+            // Check for duplicate function declaration
+            if let Some(current_scope) = all_scopes.iter().find(|s| s.label == current_scope_label) {
+                if current_scope.functions.contains_key(&name) {
+                    return Err(SemanticError::DuplicateDeclaration(name));
+                }
+            }
+            
+            // Create function scope for parameters and body
+            let func_scope_label = format!("{}.{}", current_scope_label, name);
+            let mut func_scope = Scope {
+                label: func_scope_label.clone(),
+                variables: HashMap::new(),
+                functions: HashMap::new(),
+                inside_loop: false,
+            };
+            
+            // Add parameters to function scope
+            for (param_type, param_name) in &params {
+                let param_info = VarInfo {
+                    var_type: param_type.clone(),
+                    foldable_value: None,
+                    is_array: false,
+                    array_dims: None,
+                    initial_value: None,
+                };
+                func_scope.variables.insert(param_name.clone(), param_info);
+            }
+            
+            all_scopes.push(func_scope);
+            scope_stack.push(func_scope_label);
+            
+            // Process function body - FIXED DEREFERENCING HERE!
+            let processed_body = if matches!(*body, ASTNode::Empty) {
+                body // Function declaration without body
+            } else {
+                Box::new(process_node(*body, all_scopes, scope_stack, block_counter)?)
+            };
+            
+            scope_stack.pop();
+            
+            // Add function to symbol table
+            let func_info = FuncInfo {
+                return_type: return_type.clone(),
+                params: params.clone(),
+                body: processed_body.clone(),
+            };
+            
+            // Find and update the current scope
+            if let Some(current_scope) = all_scopes.iter_mut().find(|s| s.label == current_scope_label) {
+                current_scope.functions.insert(name.clone(), func_info);
+            }
+            
+            Ok(ASTNode::Function { return_type, name, params, body: processed_body })
+        },
+        
+        // Variable usage - check if exists
+        ASTNode::Identifier(name) => {
+            if lookup_variable(&name, all_scopes, scope_stack).is_none() {
+                return Err(SemanticError::UndefinedVariable(name));
+            }
+            Ok(ASTNode::Identifier(name))
+        },
+        
+        // Function calls - validate existence and arguments
+        ASTNode::FunctionCall { name, args } => {
+            let func_info = lookup_function(&name, all_scopes, scope_stack)
+                .ok_or_else(|| SemanticError::UndefinedFunction(name.clone()))?;
+            
+            // Check argument count
+            if args.len() != func_info.params.len() {
+                return Err(SemanticError::ArgumentCountMismatch { 
+                    expected: func_info.params.len(), 
+                    found: args.len() 
+                });
+            }
+            
+            // Process and type-check arguments
+            let mut processed_args = Vec::new();
+            for (i, arg) in args.into_iter().enumerate() {
+                let processed_arg = process_node(arg, all_scopes, scope_stack, block_counter)?;
+                let arg_type = get_expr_type(&processed_arg, all_scopes, scope_stack)?;
+                let expected_type = &func_info.params[i].0;
+                
+                if !types_compatible(expected_type, &arg_type) {
+                    return Err(SemanticError::TypeMismatch { 
+                        expected: expected_type.clone(), 
+                        found: arg_type 
+                    });
+                }
+                
+                processed_args.push(processed_arg);
+            }
+            
+            Ok(ASTNode::FunctionCall { name, args: processed_args })
+        },
+        
+        // Array access - validate index type
+        ASTNode::ArrayAccess { name, index } => {
+            let var_info = lookup_variable(&name, all_scopes, scope_stack)
+                .ok_or_else(|| SemanticError::UndefinedVariable(name.clone()))?;
+            
+            if !var_info.is_array {
+                return Err(SemanticError::TypeMismatch { 
+                    expected: Keywords::Arr, 
+                    found: var_info.var_type 
+                });
+            }
+            
+            let processed_index = process_node(*index, all_scopes, scope_stack, block_counter)?;
+            let index_type = get_expr_type(&processed_index, all_scopes, scope_stack)?;
+            
+            if !matches!(index_type, Keywords::Int) {
+                return Err(SemanticError::ArrayIndexNotInt);
+            }
+            
+            Ok(ASTNode::ArrayAccess { name, index: Box::new(processed_index) })
+        },
+        
+        // Assignments - type checking
+        ASTNode::Assignment { target, value } => {
+            let processed_target = process_node(*target, all_scopes, scope_stack, block_counter)?;
+            let processed_value = process_node(*value, all_scopes, scope_stack, block_counter)?;
+            
+            let target_type = get_expr_type(&processed_target, all_scopes, scope_stack)?;
+            let value_type = get_expr_type(&processed_value, all_scopes, scope_stack)?;
+            
+            if !types_compatible(&target_type, &value_type) {
+                return Err(SemanticError::TypeMismatch { 
+                    expected: target_type, 
+                    found: value_type 
+                });
+            }
+            
+            Ok(ASTNode::Assignment { 
+                target: Box::new(processed_target), 
+                value: Box::new(processed_value) 
+            })
+        },
+        
+        // Control flow - break/continue validation
+        ASTNode::Break => {
+            // Check if we're inside any loop by traversing scope hierarchy
+            let mut in_loop = false;
+            for scope_label in scope_stack.iter().rev() {
+                if let Some(scope) = all_scopes.iter().find(|s| &s.label == scope_label) {
+                    if scope.inside_loop {
+                        in_loop = true;
+                        break;
+                    }
+                }
+            }
+            
+            if !in_loop {
+                return Err(SemanticError::BreakOutsideLoop);
+            }
+            Ok(ASTNode::Break)
+        },
+        
+        ASTNode::Continue => {
+            // Check if we're inside any loop by traversing scope hierarchy
+            let mut in_loop = false;
+            for scope_label in scope_stack.iter().rev() {
+                if let Some(scope) = all_scopes.iter().find(|s| &s.label == scope_label) {
+                    if scope.inside_loop {
+                        in_loop = true;
+                        break;
+                    }
+                }
+            }
+            
+            if !in_loop {
+                return Err(SemanticError::ContinueOutsideLoop);
+            }
+            Ok(ASTNode::Continue)
+        },
+        
+        // If statements - process all branches
+        ASTNode::If { condition, then_branch, else_branch } => {
+            let processed_condition = process_node(*condition, all_scopes, scope_stack, block_counter)?;
+            let processed_then = process_node(*then_branch, all_scopes, scope_stack, block_counter)?;
+            let processed_else = if let Some(else_node) = else_branch {
+                Some(Box::new(process_node(*else_node, all_scopes, scope_stack, block_counter)?))
+            } else {
+                None
+            };
+            
+            Ok(ASTNode::If {
+                condition: Box::new(processed_condition),
+                then_branch: Box::new(processed_then),
+                else_branch: processed_else,
+            })
+        },
+        
+        // Loops - create new scope and set loop flag
+        ASTNode::While { condition, body } => {
+            *block_counter += 1;
+            let current_scope_label = scope_stack.last().unwrap();
+            let while_scope_label = format!("{}.while{}", current_scope_label, block_counter);
+            
+            let while_scope = Scope {
+                label: while_scope_label.clone(),
+                variables: HashMap::new(),
+                functions: HashMap::new(),
+                inside_loop: true, // THIS is where the loop magic happens!
+            };
+            
+            all_scopes.push(while_scope);
+            scope_stack.push(while_scope_label);
+            
+            let processed_condition = process_node(*condition, all_scopes, scope_stack, block_counter)?;
+            let processed_body = process_node(*body, all_scopes, scope_stack, block_counter)?;
+            
+            scope_stack.pop();
+            
+            Ok(ASTNode::While { 
+                condition: Box::new(processed_condition), 
+                body: Box::new(processed_body) 
+            })
+        },
+        
+        // For loops
+        ASTNode::For { init, condition, increment, body } => {
+            *block_counter += 1;
+            let current_scope_label = scope_stack.last().unwrap();
+            let for_scope_label = format!("{}.for{}", current_scope_label, block_counter);
+            
+            let for_scope = Scope {
+                label: for_scope_label.clone(),
+                variables: HashMap::new(),
+                functions: HashMap::new(),
+                inside_loop: true,
+            };
+            
+            all_scopes.push(for_scope);
+            scope_stack.push(for_scope_label);
+            
+            let processed_init = process_node(*init, all_scopes, scope_stack, block_counter)?;
+            let processed_condition = process_node(*condition, all_scopes, scope_stack, block_counter)?;
+            let processed_increment = process_node(*increment, all_scopes, scope_stack, block_counter)?;
+            let processed_body = process_node(*body, all_scopes, scope_stack, block_counter)?;
+            
+            scope_stack.pop();
+            
+            Ok(ASTNode::For { 
+                init: Box::new(processed_init),
+                condition: Box::new(processed_condition),
+                increment: Box::new(processed_increment),
+                body: Box::new(processed_body) 
+            })
+        },
+        
+        // Blocks - create new scope
+        ASTNode::Block(statements) => {
+            *block_counter += 1;
+            let current_scope_label = scope_stack.last().unwrap();
+            let block_scope_label = format!("{}.block{}", current_scope_label, block_counter);
+            
+            // Inherit loop context from parent scope
+            let parent_in_loop = all_scopes.iter()
+                .find(|s| &s.label == current_scope_label)
+                .map(|s| s.inside_loop)
+                .unwrap_or(false);
+            
+            let block_scope = Scope {
+                label: block_scope_label.clone(),
+                variables: HashMap::new(),
+                functions: HashMap::new(),
+                inside_loop: parent_in_loop, // Inherit loop context
+            };
+            
+            all_scopes.push(block_scope);
+            scope_stack.push(block_scope_label);
+            
+            let mut processed_statements = Vec::new();
+            for stmt in statements {
+                let processed = process_node(stmt, all_scopes, scope_stack, block_counter)?;
+                processed_statements.push(processed);
+            }
+            
+            scope_stack.pop();
+            
+            Ok(ASTNode::Block(processed_statements))
+        },
+        
+        // Binary operations - process both sides
+        ASTNode::BinaryOp { op, left, right } => {
+            let processed_left = process_node(*left, all_scopes, scope_stack, block_counter)?;
+            let processed_right = process_node(*right, all_scopes, scope_stack, block_counter)?;
+            
+            Ok(ASTNode::BinaryOp { 
+                op, 
+                left: Box::new(processed_left), 
+                right: Box::new(processed_right) 
+            })
+        },
+        
+        // Unary operations - process expression
+        ASTNode::UnaryOp { op, expr } => {
+            let processed_expr = process_node(*expr, all_scopes, scope_stack, block_counter)?;
+            
+            Ok(ASTNode::UnaryOp {
+                op,
+                expr: Box::new(processed_expr)
+            })
+        },
+        
+        // Ternary operations - process all branches
+        ASTNode::TernaryOp { condition, true_expr, false_expr } => {
+            let processed_condition = process_node(*condition, all_scopes, scope_stack, block_counter)?;
+            let processed_true = process_node(*true_expr, all_scopes, scope_stack, block_counter)?;
+            let processed_false = process_node(*false_expr, all_scopes, scope_stack, block_counter)?;
+            
+            Ok(ASTNode::TernaryOp {
+                condition: Box::new(processed_condition),
+                true_expr: Box::new(processed_true),
+                false_expr: Box::new(processed_false),
+            })
+        },
+        
+        // PutChar - process expression
+        ASTNode::PutChar { expr } => {
+            let processed_expr = process_node(*expr, all_scopes, scope_stack, block_counter)?;
+            Ok(ASTNode::PutChar { expr: Box::new(processed_expr) })
+        },
+        
+        // Return statements - type checking (TODO: match with function return type)
+        ASTNode::Return(expr) => {
+            if let Some(return_expr) = expr {
+                let processed_expr = process_node(*return_expr, all_scopes, scope_stack, block_counter)?;
+                // TODO: Check return type matches function return type
+                Ok(ASTNode::Return(Some(Box::new(processed_expr))))
+            } else {
+                Ok(ASTNode::Return(None))
+            }
+        },
+        
+        // Program - process all top-level declarations
+        ASTNode::Program(declarations) => {
+            let mut processed_declarations = Vec::new();
+            for decl in declarations {
+                let processed = process_node(decl, all_scopes, scope_stack, block_counter)?;
+                processed_declarations.push(processed);
+            }
+            Ok(ASTNode::Program(processed_declarations))
+        },
+        
+        // Literals and simple nodes - pass through
+        node @ (ASTNode::LiteralInt(_) | ASTNode::LiteralChar(_) | ASTNode::LiteralString(_) | ASTNode::Empty) => {
+            Ok(node)
+        },
+    }
+}
+
+
+// Helper functions
+fn lookup_variable(name: &str, all_scopes: &[Scope], scope_stack: &[String]) -> Option<VarInfo> {
+    let current_scope_label = scope_stack.last()?;
+    let scope_labels = get_scopes(current_scope_label);
+    
     for label in scope_labels.iter().rev() {
         if let Some(scope) = all_scopes.iter().find(|s| &s.label == label) {
-            if let Some(var_info) = scope.variables.get(ident) {
+            if let Some(var_info) = scope.variables.get(name) {
                 return Some(var_info.clone());
             }
         }
@@ -927,6 +1380,300 @@ fn in_scope(current_scope: &mut Scope, all_scopes: &mut Vec<Scope>, ident : &Str
     None
 }
 
-fn run_ast(ast: &mut Vec<ASTNode>) -> Option<Vec<ASTNode>>{
-    // rebuild the ast from scratch and bail out on the first error with some fun message
+fn lookup_function(name: &str, all_scopes: &[Scope], scope_stack: &[String]) -> Option<FuncInfo> {
+    let current_scope_label = scope_stack.last()?;
+    let scope_labels = get_scopes(current_scope_label);
+    
+    for label in scope_labels.iter().rev() {
+        if let Some(scope) = all_scopes.iter().find(|s| &s.label == label) {
+            if let Some(func_info) = scope.functions.get(name) {
+                return Some(func_info.clone());
+            }
+        }
+    }
+    None
+}
+
+fn get_expr_type(node: &ASTNode, all_scopes: &[Scope], scope_stack: &[String]) -> Result<Keywords, SemanticError> {
+    match node {
+        ASTNode::LiteralInt(_) => Ok(Keywords::Int),
+        ASTNode::LiteralChar(_) => Ok(Keywords::Char),
+        ASTNode::LiteralString(_) => Ok(Keywords::String),
+        ASTNode::Identifier(name) => {
+            let var_info = lookup_variable(name, all_scopes, scope_stack)
+                .ok_or_else(|| SemanticError::UndefinedVariable(name.clone()))?;
+            Ok(var_info.var_type)
+        },
+        ASTNode::ArrayAccess { name, .. } => {
+            let var_info = lookup_variable(name, all_scopes, scope_stack)
+                .ok_or_else(|| SemanticError::UndefinedVariable(name.clone()))?;
+            Ok(var_info.var_type) // Return element type
+        },
+        ASTNode::FunctionCall { name, .. } => {
+            let func_info = lookup_function(name, all_scopes, scope_stack)
+                .ok_or_else(|| SemanticError::UndefinedFunction(name.clone()))?;
+            Ok(func_info.return_type)
+        },
+        // Add more type inference cases as needed
+        _ => Ok(Keywords::Int), // Default fallback
+    }
+}
+
+fn types_compatible(expected: &Keywords, found: &Keywords) -> bool {
+    expected == found || 
+    (matches!(expected, Keywords::Int) && matches!(found, Keywords::Char)) ||
+    (matches!(expected, Keywords::Char) && matches!(found, Keywords::Int))
+}
+
+fn main() {
+    println!("🔥 EXTREME C-TO-BRAINFUCK COMPILER TORTURE TEST 🔥");
+    println!("Time to separate the wheat from the chaff...\n");
+
+    // Real-world nightmare scenarios
+    torture_test("Uninitialized Variable Usage", r#"
+        int main() {
+            int x;
+            int y = x + 5;  // Using uninitialized x!
+            return y;
+        }
+    "#);
+
+    torture_test("Array Out-of-Bounds Access", r#"
+        int main() {
+            int arr[5];
+            int dangerous = arr[10];  // Way out of bounds!
+            return dangerous;
+        }
+    "#);
+
+    torture_test("Complex Type Mismatch Chain", r#"
+        int main() {
+            int x = 42;
+            char c = 'A';
+            x = "this is a string";  // Massive type mismatch!
+            c = x;
+            return c;
+        }
+    "#);
+
+    torture_test("Invalid Array Size Edge Cases", r#"
+        int main() {
+            int arr1[0];      // Zero size - should fail
+            int arr2[-5];     // Negative size - should fail
+            return 0;
+        }
+    "#);
+
+    torture_test("Deep Nested Scope Madness", r#"
+        int main() {
+            int x = 1;
+            {
+                int x = 2;  // Shadow outer x
+                {
+                    int x = 3;  // Shadow again
+                    {
+                        int y = x;  // Should use innermost x (3)
+                        {
+                            int z = w;  // w is undefined!
+                        }
+                    }
+                }
+            }
+            return x;  // Should be 1
+        }
+    "#);
+
+    torture_test("Function Call Hell", r#"
+        int multiply(int a, int b) {
+            return a * b;
+        }
+        
+        int main() {
+            int result1 = multiply(5);        // Too few args
+            int result2 = multiply(1, 2, 3);  // Too many args
+            int result3 = ghost_function(42); // Undefined function
+            return result1;
+        }
+    "#);
+
+    torture_test("Loop Control Flow Chaos", r#"
+        int main() {
+            int x = 5;
+            break;      // Break outside loop - error!
+            
+            while (x > 0) {
+                continue; // This is valid
+                x = x - 1;
+                if (x == 2) {
+                    break; // This is valid
+                }
+            }
+            
+            continue;   // Continue outside loop - error!
+            return x;
+        }
+    "#);
+
+    torture_test("Mixed Array and Function Madness", r#"
+        int process(int value) {
+            return value * 2;
+        }
+        
+        int main() {
+            int numbers[3];
+            char letter = 'x';
+            
+            numbers[letter] = 42;        // Char as index (should work)
+            numbers["hello"] = 10;       // String as index - error!
+            
+            int result = process(numbers[2]);
+            return result;
+        }
+    "#);
+
+    torture_test("Return Type Validation", r#"
+        char get_letter() {
+            return 65;  // Should work (int -> char)
+        }
+        
+        int get_number() {
+            return "not a number";  // Type mismatch error!
+        }
+        
+        int main() {
+            char c = get_letter();
+            int n = get_number();
+            return n;
+        }
+    "#);
+
+    torture_test("Recursive Declaration Nightmare", r#"
+        int factorial(int n) {
+            int factorial = 5;  // Variable same name as function
+            if (n <= 1) {
+                return factorial;
+            }
+            return n * factorial(n - 1);
+        }
+        
+        int main() {
+            return factorial(5);
+        }
+    "#);
+
+    torture_test("Complex Expression Folding Test", r#"
+        int main() {
+            int x = 2 + 3 * 4 - 1;           // Should fold to 13
+            int y = (5 > 3) ? (10 + 5) : 0;  // Should fold to 15
+            int z = !0 && (4 < 10);          // Should fold to 1
+            
+            int arr[x];  // Using folded constant as array size
+            return x + y + z;  // Should be 29
+        }
+    "#);
+
+    torture_test("Extreme Nesting with All Features", r#"
+        int helper(int a, int b) {
+            return a + b;
+        }
+        
+        int main() {
+            int global_var = 100;
+            
+            for (int i = 0; i < 3; i = i + 1) {
+                int loop_var = i * 2;
+                
+                if (loop_var > 2) {
+                    int if_var = loop_var + 1;
+                    
+                    while (if_var > 0) {
+                        if_var = if_var - 1;
+                        
+                        if (if_var == 1) {
+                            int deep_var = helper(if_var, global_var);
+                            break;
+                        }
+                    }
+                } else {
+                    continue;
+                }
+            }
+            
+            return global_var;
+        }
+    "#);
+
+    torture_test("Assignment Chain Type Checking", r#"
+        int main() {
+            int a, b, c;
+            char x, y;
+            
+            a = b = c = 42;        // Should work
+            x = y = 'Z';           // Should work
+            a = x = c;             // Mixed types - should work with conversion
+            x = "string literal";  // Type mismatch - should fail
+            
+            return a;
+        }
+    "#);
+
+    torture_test("Edge Case Array Initializers", r#"
+        int main() {
+            int arr1[3] = {1, 2, 3};           // Valid
+            int arr2[5] = {1, 2};              // Partial init - valid
+            char str[10] = "hello";            // String init - valid
+            int arr3[2] = {1, 2, 3, 4, 5};     // Too many elements - error
+            
+            return arr1[0];
+        }
+    "#);
+
+    torture_test("Pathological Identifier Shadowing", r#"
+        int x = 42;  // Global
+        
+        int main() {
+            int x = 1;   // Shadow global
+            {
+                char x = 'A';  // Shadow local
+                {
+                    int x = 999;  // Shadow again
+                    return x;     // Should return 999
+                }
+                return x;  // Should return 'A' (65)
+            }
+            return x;  // Should return 1
+        }
+    "#);
+
+    println!("\n💀 TORTURE TEST COMPLETE! 💀");
+    println!("If your compiler survived this gauntlet, it's ready for the real world!");
+    println!("Time to generate some EPIC brainfuck code! 🧠🔥");
+}
+
+fn torture_test(name: &str, source_code: &str) {
+    println!("💀 TORTURE TEST: {}", name);
+    println!("💀 Code under torture:");
+    println!("{}", source_code);
+    println!("💀 Result:");
+
+    // Parse and analyze
+    let ast = match parse_program(source_code) {
+        Some(ast) => ast,
+        None => {
+            println!(" PARSER DEATH: Failed to parse");
+            return;
+        }
+    };
+
+    match run_ast(&mut vec![ast]) {
+        Ok(_) => {
+            println!("   ✅ SURVIVED: Code passed semantic analysis");
+            println!("   🎯 Ready for brainfuck generation!");
+        },
+        Err(e) => {
+            println!("   💥 SEMANTIC DEATH: {}", e);
+            println!("   😈 Your compiler caught the bug like a boss!");
+        }
+    }
+    
 }
