@@ -870,3 +870,7 @@ fn in_scope(current_scope: &mut Scope, all_scopes: &mut Vec<Scope>, ident : &Str
     }
     None
 }
+
+fn run_ast(ast: &mut Vec<ASTNode>) -> Option<Vec<ASTNode>>{
+    
+}
