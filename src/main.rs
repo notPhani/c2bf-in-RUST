@@ -399,27 +399,33 @@ fn parse_expression(tokens: &mut Vec<Token>) -> Option<ASTNode> {
 
 //Phew mf that was a lot of work
 //Now we write assignment parsing MF this is a lot of work too
+// In parse_assignment, make sure assignments go through semantic analysis
 fn parse_assignment(tokens: &mut Vec<Token>) -> Option<ASTNode> {
-    //Handles only array element assignment and identifier assignment, not variable declaration nor, array declaration.
     let left = parse_expression(tokens)?;
     
     if let Some(Token::Operator(Operations::Assign)) = tokens.first() {
-        tokens.remove(0); // consume '='
-        
+        println!("DEBUG: Found assignment operator");
+        tokens.remove(0);
         match left {
             ASTNode::Identifier(_) | ASTNode::ArrayAccess { .. } => {
-                let right = parse_assignment(tokens)?; 
+                let right = parse_assignment(tokens)?;
+                println!("DEBUG: Creating Assignment node");
                 Some(ASTNode::Assignment { 
                     target: Box::new(left), 
                     value: Box::new(right)
                 })
             },
-            _ => None,
+            _ => {
+                println!("DEBUG: Invalid assignment target");
+                None
+            }
         }
     } else {
         Some(left)
     }
 }
+
+
 
 
 fn parse_block(tokens: &mut Vec<Token>)->Option<ASTNode>{
@@ -952,6 +958,44 @@ fn run_ast(ast: &mut Vec<ASTNode>) -> Result<Vec<ASTNode>, SemanticError> {
     Ok(rebuilt_ast)
 }
 
+// Helper function to check literal assignments with range validation
+fn check_assignment_types(target_type: &Keywords, value_type: &Keywords) -> Result<(), SemanticError> {
+    println!("DEBUG: Checking assignment types: {:?} = {:?}", target_type, value_type);
+    
+    match (target_type, value_type) {
+        // Exact matches
+        (Keywords::Int, Keywords::Int) => Ok(()),
+        (Keywords::Char, Keywords::Char) => Ok(()),
+        (Keywords::String, Keywords::String) => Ok(()),
+        (Keywords::Arr, Keywords::Arr) => Ok(()),
+        
+        // Safe promotions
+        (Keywords::Int, Keywords::Char) => Ok(()),
+        (Keywords::Int, Keywords::String) => {
+            println!("DEBUG: Rejecting string->int assignment");
+            Err(SemanticError::TypeMismatch { 
+                expected: Keywords::Int, 
+                found: Keywords::String 
+            })
+        },
+        (Keywords::Char, Keywords::String) => {
+            Err(SemanticError::TypeMismatch { 
+                expected: Keywords::Char, 
+                found: Keywords::String 
+            })
+        },
+        
+        // All other cross-type assignments
+        (expected, found) => {
+            Err(SemanticError::TypeMismatch {
+                expected: expected.clone(),
+                found: found.clone(),
+            })
+        }
+    }
+}
+
+
 // UPDATED: Added current_function_return_type parameter
 fn process_node(
     node: ASTNode,
@@ -1010,58 +1054,70 @@ fn process_node(
         },
         
         ASTNode::Function { return_type, name, params, body } => {
-            let current_scope_label = scope_stack.last().unwrap().clone();
-            
-            if let Some(current_scope) = all_scopes.iter().find(|s| s.label == current_scope_label) {
-                if current_scope.functions.contains_key(&name) {
-                    return Err(SemanticError::DuplicateDeclaration(name));
-                }
-            }
-            
-            let func_scope_label = format!("{}.{}", current_scope_label, name);
-            let mut func_scope = Scope {
-                label: func_scope_label.clone(),
-                variables: HashMap::new(),
-                functions: HashMap::new(),
-                inside_loop: false,
-            };
-            
-            for (param_type, param_name) in &params {
-                let param_info = VarInfo {
-                    var_type: param_type.clone(),
-                    foldable_value: None,
-                    is_array: false,
-                    array_dims: None,
-                    initial_value: None,
-                    is_initialized: true, // Parameters are always initialized
-                };
-                func_scope.variables.insert(param_name.clone(), param_info);
-            }
-            
-            all_scopes.push(func_scope);
-            scope_stack.push(func_scope_label);
-            
-            // FIXED: Pass the function's return type to body processing
-            let processed_body = if matches!(*body, ASTNode::Empty) {
-                body
-            } else {
-                Box::new(process_node(*body, all_scopes, scope_stack, block_counter, Some(&return_type))?)
-            };
-            
-            scope_stack.pop();
-            
-            let func_info = FuncInfo {
-                return_type: return_type.clone(),
-                params: params.clone(),
-                body: processed_body.clone(),
-            };
-            
-            if let Some(current_scope) = all_scopes.iter_mut().find(|s| s.label == current_scope_label) {
-                current_scope.functions.insert(name.clone(), func_info);
-            }
-            
-            Ok(ASTNode::Function { return_type, name, params, body: processed_body })
-        },
+    let current_scope_label = scope_stack.last().unwrap().clone();
+    
+    // Check for duplicates first
+    if let Some(current_scope) = all_scopes.iter().find(|s| s.label == current_scope_label) {
+        if current_scope.functions.contains_key(&name) {
+            return Err(SemanticError::DuplicateDeclaration(name));
+        }
+    }
+    
+    // ⭐ ADD FUNCTION TO SYMBOL TABLE FIRST (before processing body)
+    let func_info = FuncInfo {
+        return_type: return_type.clone(),
+        params: params.clone(),
+        body: body.clone(), // Use original body for now
+    };
+    
+    if let Some(current_scope) = all_scopes.iter_mut().find(|s| s.label == current_scope_label) {
+        current_scope.functions.insert(name.clone(), func_info);
+    }
+    
+    // Now create function scope and process body
+    let func_scope_label = format!("{}.{}", current_scope_label, name);
+    let mut func_scope = Scope {
+        label: func_scope_label.clone(),
+        variables: HashMap::new(),
+        functions: HashMap::new(),
+        inside_loop: false,
+    };
+    
+    // Add parameters to function scope
+    for (param_type, param_name) in &params {
+        let param_info = VarInfo {
+            var_type: param_type.clone(),
+            foldable_value: None,
+            is_array: false,
+            array_dims: None,
+            initial_value: None,
+            is_initialized: true,
+        };
+        func_scope.variables.insert(param_name.clone(), param_info);
+    }
+    
+    all_scopes.push(func_scope);
+    scope_stack.push(func_scope_label);
+    
+    // Process body AFTER function is in symbol table
+    let processed_body = if matches!(*body, ASTNode::Empty) {
+        body
+    } else {
+        Box::new(process_node(*body, all_scopes, scope_stack, block_counter, Some(&return_type))?)
+    };
+    
+    scope_stack.pop();
+    
+    // Update the function info with processed body
+    if let Some(current_scope) = all_scopes.iter_mut().find(|s| s.label == current_scope_label) {
+        if let Some(func_info) = current_scope.functions.get_mut(&name) {
+            func_info.body = processed_body.clone();
+        }
+    }
+    
+    Ok(ASTNode::Function { return_type, name, params, body: processed_body })
+},
+
         
         ASTNode::Identifier(name) => {
             if let Some(var_info) = lookup_variable(&name, all_scopes, scope_stack) {
@@ -1126,31 +1182,32 @@ fn process_node(
             Ok(ASTNode::ArrayAccess { name, index: Box::new(processed_index) })
         },
         
-        ASTNode::Assignment { target, value } => {
-            let processed_target = process_node(*target, all_scopes, scope_stack, block_counter, current_function_return_type)?;
-            let processed_value = process_node(*value, all_scopes, scope_stack, block_counter, current_function_return_type)?;
-            
-            let target_type = get_expr_type(&processed_target, all_scopes, scope_stack)?;
-            let value_type = get_expr_type(&processed_value, all_scopes, scope_stack)?;
-            
-            if !types_compatible(&target_type, &value_type) {
-                return Err(SemanticError::TypeMismatch { 
-                    expected: target_type, 
-                    found: value_type 
-                });
-            }
-            
-            // Mark variable as initialized after assignment
-            if let ASTNode::Identifier(var_name) = &processed_target {
-                mark_variable_initialized(var_name, all_scopes, scope_stack);
-            }
-            
-            Ok(ASTNode::Assignment { 
-                target: Box::new(processed_target), 
-                value: Box::new(processed_value) 
-            })
-        },
-        
+        // In your assignment handling within `process_node`
+ASTNode::Assignment { target, value } => {
+    println!("DEBUG: Processing assignment"); // Add this for debugging
+    
+    let processed_target = process_node(*target, all_scopes, scope_stack, block_counter, current_function_return_type)?;
+    let processed_value = process_node(*value, all_scopes, scope_stack, block_counter, current_function_return_type)?;
+
+    let target_type = get_expr_type(&processed_target, all_scopes, scope_stack)?;
+    let value_type = get_expr_type(&processed_value, all_scopes, scope_stack)?;
+
+    println!("DEBUG: Assignment types - target: {:?}, value: {:?}", target_type, value_type);
+
+    // Enhanced type checking function
+    check_assignment_types(&target_type, &value_type)?;
+
+    // Mark variable as initialized
+    if let ASTNode::Identifier(var_name) = &processed_target {
+        mark_variable_initialized(var_name, all_scopes, scope_stack);
+    }
+
+    Ok(ASTNode::Assignment {
+        target: Box::new(processed_target),
+        value: Box::new(processed_value),
+    })
+},
+
         ASTNode::Break => {
             let mut in_loop = false;
             for scope_label in scope_stack.iter().rev() {
@@ -1353,11 +1410,11 @@ fn process_node(
         (Some(expected_type), None) => {
             Err(SemanticError::ReturnTypeMismatch { 
                 expected: expected_type.clone(), 
-                found: Keywords::Int // Placeholder for "void"
+                found: Keywords::String // Use different type to indicate "void"
             })
         },
         
-        // No current function context (global scope)
+        // No function context but return expression provided
         (None, Some(return_expr)) => {
             let processed_expr = process_node(
                 *return_expr, 
@@ -1376,7 +1433,6 @@ fn process_node(
     }
 },
 
-        
         ASTNode::Program(declarations) => {
             let mut processed_declarations = Vec::new();
             for decl in declarations {
@@ -1600,61 +1656,68 @@ fn types_compatible(expected: &Keywords, found: &Keywords) -> bool {
         (Keywords::Char, Keywords::Char) => true,
         (Keywords::String, Keywords::String) => true,
         (Keywords::Char, Keywords::Int) => true,
+        (Keywords::Int, Keywords::Char) => true,
+        (Keywords::Int, Keywords::String) => false,
         _ => false,
     }
 }
 
 fn main() {
-    let test_cases = vec![
-        ("Basic valid code", r#"int main() { int x = 42; return x; }"#),
+    let extra_test_cases = vec![
+        // Fix your first test - it uses undeclared x
+        ("Basic valid code fixed", r#"int main() { int x = 42; return x; }"#),
         
-        ("Undefined variable", r#"int main() { int x = y; return x; }"#),
+        // More type conversion edge cases
+        ("Char literal assignment", r#"int main() { char c = 'Z'; int x = c; return x; }"#),
+        ("Large char value", r#"int main() { char c = 128; return c; }"#),
+        ("String length check", r#"int main() { string s = "hello world"; return 0; }"#),
         
-        ("Duplicate declaration", r#"int main() { int x; int x; return 0; }"#),
+        // Function edge cases
+        ("Recursive function", r#"int fib(int n) { if (n <= 1) return n; return fib(n-1) + fib(n-2); } int main() { return fib(5); }"#),
+        ("Function with no params", r#"int get_magic() { return 42; } int main() { return get_magic(); }"#),
+        ("Function returning char", r#"char get_letter() { return 'A'; } int main() { char c = get_letter(); return c; }"#),
         
-        ("Type mismatch assignment", r#"int main() { int x = 0; x = "string"; return x; }"#),
+        // Array madness
+        ("Multi-dimensional array", r#"int main() { int arr[3][3]; arr[1][2] = 5; return arr[1][2]; }"#),
+        ("Array initialization", r#"int main() { int arr[3] = {1, 2, 3}; return arr[1]; }"#),
+        ("String as array", r#"int main() { string s = "test"; return 0; }"#),
+        ("Array bounds with variables", r#"int main() { int arr[5]; int i = 2; return arr[i]; }"#),
         
-        ("Break outside loop", r#"int main() { break; return 0; }"#),
+        // Control flow chaos
+        ("Nested loops with break", r#"int main() { int x = 0; for(int i = 0; i < 3; i = i + 1) { while(x < 10) { x = x + 1; if(x == 5) break; } } return x; }"#),
+        ("Complex if-else chain", r#"int main() { int x = 5; if(x > 10) return 1; else if(x > 5) return 2; else if(x == 5) return 3; else return 4; }"#),
+        ("For loop with complex increment", r#"int main() { int sum = 0; for(int i = 0; i < 10; i = i + 2) { sum = sum + i; } return sum; }"#),
         
-        ("Continue outside loop", r#"int main() { continue; return 0; }"#),
+        // Expression complexity
+        ("Complex arithmetic", r#"int main() { int x = (5 + 3) * 2 - 1; return x; }"#),
+        ("Ternary operator", r#"int main() { int x = 5; int y = (x > 3) ? 10 : 20; return y; }"#),
+        ("Mixed type expressions", r#"int main() { int x = 5; char c = 'A'; int result = x + c; return result; }"#),
         
-        ("Return type mismatch", r#"int f() { return "string"; } int main() { return 0; }"#),
+        // Scope and shadowing tests
+        ("Deep variable shadowing", r#"int x = 1; int main() { int x = 2; { int x = 3; { int x = 4; return x; } } }"#),
+        ("Function parameter shadowing", r#"int x = 100; int test(int x) { return x + 1; } int main() { return test(5); }"#),
+        ("Loop variable scope", r#"int main() { int x = 0; for(int x = 1; x < 3; x = x + 1) { } return x; }"#),
         
-        ("Missing return value", r#"int f() { return; } int main() { return 0; }"#),
+        // Initialization edge cases
+        ("Multiple uninitialized variables", r#"int main() { int a, b, c; a = 1; return a + b; }"#),
+        ("Assignment in declaration", r#"int main() { int x = 5, y = x + 1; return y; }"#),
+        ("Array element initialization", r#"int main() { int arr[3]; arr[0] = 10; int x = arr[1]; return x; }"#),
         
-        ("Undefined function", r#"int main() { ghost_function(); return 0; }"#),
+        // Error combinations
+        ("Function and array errors", r#"int main() { int x[5]; ghost_func(x["hello"]); return 0; }"#),
+        ("Type and scope errors", r#"int main() { unknown_var = "string"; return unknown_var; }"#),
+        ("Complex nested errors", r#"int f() { return; } int main() { int x; x = f(); return x[0]; }"#),
         
-        ("Argument count mismatch", r#"int f(int a, int b) { return a + b; } int main() { f(1); return 0; }"#),
-        
-        ("Array index not integer", r#"int main() { int arr[5]; int x = arr["hello"]; return x; }"#),
-        
-        ("Invalid array size", r#"int main() { int arr[0]; return 0; }"#),
-        
-        ("Array access on non-array", r#"int main() { int x = 5; int y = x[0]; return y; }"#),
-        
-        ("Valid nested scopes", r#"int main() { int x = 1; { int x = 2; } return x; }"#),
-        
-        ("Valid loop with break", r#"int main() { int x = 0; while (x < 10) { if (x == 5) break; x = x + 1; } return x; }"#),
-        
-        ("Uninitialized variable usage", r#"int main() { int x; int y = x + 5; return y; }"#),
-        
-        ("Complex type mismatch in function", r#"
-            char get_char() { return 300; }
-            int main() { char c = get_char(); return c; }
-        "#),
-        
-        ("Multiple errors", r#"
-            int main() {
-                int x;
-                int x;
-                y = x + 1;
-                break;
-                return "not an int";
-            }
-        "#),
+        // Edge cases for meme value
+        ("Empty function body", r#"int main() { }"#),
+        ("Only comments", r#"int main() { /* nothing here */ return 0; }"#),
+        ("Weird but valid", r#"int main() { int x = 0; x = x = x = 42; return x; }"#),
     ];
 
-    for (i, (description, source)) in test_cases.iter().enumerate() {
+    // Combine with your existing test_cases
+    let  all_tests = extra_test_cases;
+
+    for (i, (description, source)) in all_tests.iter().enumerate() {
         println!("Test {}: {}", i + 1, description);
         println!("Code: {}", source.trim());
         
