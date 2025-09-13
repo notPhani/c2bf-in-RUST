@@ -1661,3 +1661,75 @@ fn types_compatible(expected: &Keywords, found: &Keywords) -> bool {
         _ => false,
     }
 }
+
+fn main() {
+    let extra_test_cases = vec![
+        // Fix your first test - it uses undeclared x
+        ("Basic valid code fixed", r#"int main() { int x = 42; return x; }"#),
+        
+        // More type conversion edge cases
+        ("Char literal assignment", r#"int main() { char c = 'Z'; int x = c; return x; }"#),
+        ("Large char value", r#"int main() { char c = 128; return c; }"#),
+        ("String length check", r#"int main() { string s = "hello world"; return 0; }"#),
+        
+        // Function edge cases
+        ("Recursive function", r#"int fib(int n) { if (n <= 1) return n; return fib(n-1) + fib(n-2); } int main() { return fib(5); }"#),
+        ("Function with no params", r#"int get_magic() { return 42; } int main() { return get_magic(); }"#),
+        ("Function returning char", r#"char get_letter() { return 'A'; } int main() { char c = get_letter(); return c; }"#),
+        
+        // Array madness
+        ("Multi-dimensional array", r#"int main() { int arr[3][3]; arr[1][2] = 5; return arr[1][2]; }"#),
+        ("Array initialization", r#"int main() { int arr[3] = {1, 2, 3}; return arr[1]; }"#),
+        ("String as array", r#"int main() { string s = "test"; return 0; }"#),
+        ("Array bounds with variables", r#"int main() { int arr[5]; int i = 2; return arr[i]; }"#),
+        
+        // Control flow chaos
+        ("Nested loops with break", r#"int main() { int x = 0; for(int i = 0; i < 3; i = i + 1) { while(x < 10) { x = x + 1; if(x == 5) break; } } return x; }"#),
+        ("Complex if-else chain", r#"int main() { int x = 5; if(x > 10) return 1; else if(x > 5) return 2; else if(x == 5) return 3; else return 4; }"#),
+        ("For loop with complex increment", r#"int main() { int sum = 0; for(int i = 0; i < 10; i = i + 2) { sum = sum + i; } return sum; }"#),
+        
+        // Expression complexity
+        ("Complex arithmetic", r#"int main() { int x = (5 + 3) * 2 - 1; return x; }"#),
+        ("Ternary operator", r#"int main() { int x = 5; int y = (x > 3) ? 10 : 20; return y; }"#),
+        ("Mixed type expressions", r#"int main() { int x = 5; char c = 'A'; int result = x + c; return result; }"#),
+        
+        // Scope and shadowing tests
+        ("Deep variable shadowing", r#"int x = 1; int main() { int x = 2; { int x = 3; { int x = 4; return x; } } }"#),
+        ("Function parameter shadowing", r#"int x = 100; int test(int x) { return x + 1; } int main() { return test(5); }"#),
+        ("Loop variable scope", r#"int main() { int x = 0; for(int x = 1; x < 3; x = x + 1) { } return x; }"#),
+        
+        // Initialization edge cases
+        ("Multiple uninitialized variables", r#"int main() { int a, b, c; a = 1; return a + b; }"#),
+        ("Assignment in declaration", r#"int main() { int x = 5, y = x + 1; return y; }"#),
+        ("Array element initialization", r#"int main() { int arr[3]; arr[0] = 10; int x = arr[1]; return x; }"#),
+        
+        // Error combinations
+        ("Function and array errors", r#"int main() { int x[5]; ghost_func(x["hello"]); return 0; }"#),
+        ("Type and scope errors", r#"int main() { unknown_var = "string"; return unknown_var; }"#),
+        ("Complex nested errors", r#"int f() { return; } int main() { int x; x = f(); return x[0]; }"#),
+        
+        // Edge cases for meme value
+        ("Empty function body", r#"int main() { }"#),
+        ("Only comments", r#"int main() { /* nothing here */ return 0; }"#),
+        ("Weird but valid", r#"int main() { int x = 0; x = x = x = 42; return x; }"#),
+    ];
+
+    // Combine with your existing test_cases
+    let  all_tests = extra_test_cases;
+
+    for (i, (description, source)) in all_tests.iter().enumerate() {
+        println!("Test {}: {}", i + 1, description);
+        println!("Code: {}", source.trim());
+        
+        match parse_program(source) {
+            Some(ast) => {
+                match run_ast(&mut vec![ast]) {
+                    Ok(_) => println!("Result: PASSED semantic analysis"),
+                    Err(e) => println!("Result: FAILED - {}", e),
+                }
+            },
+            None => println!("Result: FAILED - Parse error"),
+        }
+        println!("{}", "-".repeat(60));
+    }
+}
