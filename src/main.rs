@@ -1662,6 +1662,41 @@ fn types_compatible(expected: &Keywords, found: &Keywords) -> bool {
     }
 }
 
+// next is to implement the inlining function : since we already walked the tree once it's best to pattern match and 
+/*
+(*
+ * inline : program -> program
+ *
+ * remove all functions, assuming that the program is well typed
+ *)
+let inline =
+    (* for temporary variables in expressions *)
+    let tmp_counter = ref 0 in
+
+    let get_tmp_var () =
+        incr tmp_counter;
+        sprintf "%d_tmp" (!tmp_counter)
+    in
+
+    (* for local variables inside functions *)
+    let call_counter = ref 0 in
+
+    let name_local_var call_id name = sprintf "%d_loc_%s" call_id name in
+
+    (* inline_expression : inline_environment -> expression -> program * expression *)
+    let rec inline_expression env expr =
+        let inline_unary_expr expr construct =
+            let pre_expr, new_expr = inline_expression env expr in
+            pre_expr, construct new_expr
+        in
+        let inline_binary_expr left right construct =
+            let pre_left, new_left = inline_expression env left in
+            let pre_right, new_right = inline_expression env right in
+            pre_left @ pre_right, construct new_left new_right
+        in
+
+This as far as my knowledge does this :: 
+ */
 fn main() {
     let extra_test_cases = vec![
         // Fix your first test - it uses undeclared x
@@ -1729,7 +1764,7 @@ fn main() {
                 }
             },
             None => println!("Result: FAILED - Parse error"),
-        }
+        } 
         println!("{}", "-".repeat(60));
     }
 }
