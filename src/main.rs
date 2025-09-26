@@ -1663,108 +1663,370 @@ fn types_compatible(expected: &Keywords, found: &Keywords) -> bool {
 }
 
 // next is to implement the inlining function : since we already walked the tree once it's best to pattern match and 
-/*
-(*
- * inline : program -> program
- *
- * remove all functions, assuming that the program is well typed
- *)
-let inline =
-    (* for temporary variables in expressions *)
-    let tmp_counter = ref 0 in
+// Just got the "AHA" moment of the century rn
+// We will use the scopes and varInfo and funcInfo to do the inlining for us instead of having a seperate symbols tables and counter
+// We can just use the existing ones and add a few more fields if needed
+// And fuck it we are doing it in two passes one for inlining and one for the IR and taping
 
-    let get_tmp_var () =
-        incr tmp_counter;
-        sprintf "%d_tmp" (!tmp_counter)
-    in
+//---------------------------------Pre-IR (inlining) ---------------------------------------------------
+// Unfortunately we cannot use the scopes anywhere here since we dynamically used them in run_ast and never stored any
+// So we will have to build that ourselfs everytime a function is to be inlined
+// Fortunately however, we are only gonna be doing this n times if n being number of functions declared
+// Since it's gonna be recursive and all the calls with "name" will be inlined in one call
+fn inline_all_functions(ast: &mut Vec<ASTNode>) -> Result<Vec<ASTNode>, String> {
+    // Internal state management - just like your run_ast function
+    let mut call_counter = 0usize;
+    let mut all_scopes: Vec<Scope> = Vec::new();
+    let mut scope_stack: Vec<String> = vec!["global".to_string()];
+    let mut block_counter = 0usize;
+    
+    // Phase 1: Build function map from the AST using your existing FuncInfo
+    let mut function_map: HashMap<String, FuncInfo> = HashMap::new();
+    extract_functions_from_ast(ast, &mut function_map)?;
+    
+    // Phase 2: Find main function and inline all calls within it
+    for node in ast.iter_mut() {
+        if let ASTNode::Function { return_type: _, name, params: _, body } = node {
+            if name == "main" {
+                recursive_inline_calls(
+                    body, 
+                    &function_map, 
+                    &mut call_counter,
+                    &mut all_scopes,
+                    &mut scope_stack,
+                    &mut block_counter
+                )?;
+                break;
+            }
+        }
+    }
+    
+    // Phase 3: Clean up - remove all function declarations except main
+    ast.retain(|node| {
+        match node {
+            ASTNode::Function { name, .. } => name == "main",
+            _ => true
+        }
+    });
+    
+    Ok(ast.clone())
+}
 
-    (* for local variables inside functions *)
-    let call_counter = ref 0 in
+// Extract functions using your existing ASTNode::Function pattern
+fn extract_functions_from_ast(
+    ast: &Vec<ASTNode>, 
+    function_map: &mut HashMap<String, FuncInfo>
+) -> Result<(), String> {
+    for node in ast {
+        if let ASTNode::Function { return_type, name, params, body } = node {
+            let func_info = FuncInfo {
+                return_type: return_type.clone(),
+                params: params.clone(),
+                body: body.clone(),
+            };
+            function_map.insert(name.clone(), func_info);
+        }
+    }
+    Ok(())
+}
 
-    let name_local_var call_id name = sprintf "%d_loc_%s" call_id name in
-
-    (* inline_expression : inline_environment -> expression -> program * expression *)
-    let rec inline_expression env expr =
-        let inline_unary_expr expr construct =
-            let pre_expr, new_expr = inline_expression env expr in
-            pre_expr, construct new_expr
-        in
-        let inline_binary_expr left right construct =
-            let pre_left, new_left = inline_expression env left in
-            let pre_right, new_right = inline_expression env right in
-            pre_left @ pre_right, construct new_left new_right
-        in
-
-This as far as my knowledge does this :: 
- */
-fn main() {
-    let extra_test_cases = vec![
-        // Fix your first test - it uses undeclared x
-        ("Basic valid code fixed", r#"int main() { int x = 42; return x; }"#),
-        
-        // More type conversion edge cases
-        ("Char literal assignment", r#"int main() { char c = 'Z'; int x = c; return x; }"#),
-        ("Large char value", r#"int main() { char c = 128; return c; }"#),
-        ("String length check", r#"int main() { string s = "hello world"; return 0; }"#),
-        
-        // Function edge cases
-        ("Recursive function", r#"int fib(int n) { if (n <= 1) return n; return fib(n-1) + fib(n-2); } int main() { return fib(5); }"#),
-        ("Function with no params", r#"int get_magic() { return 42; } int main() { return get_magic(); }"#),
-        ("Function returning char", r#"char get_letter() { return 'A'; } int main() { char c = get_letter(); return c; }"#),
-        
-        // Array madness
-        ("Multi-dimensional array", r#"int main() { int arr[3][3]; arr[1][2] = 5; return arr[1][2]; }"#),
-        ("Array initialization", r#"int main() { int arr[3] = {1, 2, 3}; return arr[1]; }"#),
-        ("String as array", r#"int main() { string s = "test"; return 0; }"#),
-        ("Array bounds with variables", r#"int main() { int arr[5]; int i = 2; return arr[i]; }"#),
-        
-        // Control flow chaos
-        ("Nested loops with break", r#"int main() { int x = 0; for(int i = 0; i < 3; i = i + 1) { while(x < 10) { x = x + 1; if(x == 5) break; } } return x; }"#),
-        ("Complex if-else chain", r#"int main() { int x = 5; if(x > 10) return 1; else if(x > 5) return 2; else if(x == 5) return 3; else return 4; }"#),
-        ("For loop with complex increment", r#"int main() { int sum = 0; for(int i = 0; i < 10; i = i + 2) { sum = sum + i; } return sum; }"#),
-        
-        // Expression complexity
-        ("Complex arithmetic", r#"int main() { int x = (5 + 3) * 2 - 1; return x; }"#),
-        ("Ternary operator", r#"int main() { int x = 5; int y = (x > 3) ? 10 : 20; return y; }"#),
-        ("Mixed type expressions", r#"int main() { int x = 5; char c = 'A'; int result = x + c; return result; }"#),
-        
-        // Scope and shadowing tests
-        ("Deep variable shadowing", r#"int x = 1; int main() { int x = 2; { int x = 3; { int x = 4; return x; } } }"#),
-        ("Function parameter shadowing", r#"int x = 100; int test(int x) { return x + 1; } int main() { return test(5); }"#),
-        ("Loop variable scope", r#"int main() { int x = 0; for(int x = 1; x < 3; x = x + 1) { } return x; }"#),
-        
-        // Initialization edge cases
-        ("Multiple uninitialized variables", r#"int main() { int a, b, c; a = 1; return a + b; }"#),
-        ("Assignment in declaration", r#"int main() { int x = 5, y = x + 1; return y; }"#),
-        ("Array element initialization", r#"int main() { int arr[3]; arr[0] = 10; int x = arr[1]; return x; }"#),
-        
-        // Error combinations
-        ("Function and array errors", r#"int main() { int x[5]; ghost_func(x["hello"]); return 0; }"#),
-        ("Type and scope errors", r#"int main() { unknown_var = "string"; return unknown_var; }"#),
-        ("Complex nested errors", r#"int f() { return; } int main() { int x; x = f(); return x[0]; }"#),
-        
-        // Edge cases for meme value
-        ("Empty function body", r#"int main() { }"#),
-        ("Only comments", r#"int main() { /* nothing here */ return 0; }"#),
-        ("Weird but valid", r#"int main() { int x = 0; x = x = x = 42; return x; }"#),
-    ];
-
-    // Combine with your existing test_cases
-    let  all_tests = extra_test_cases;
-
-    for (i, (description, source)) in all_tests.iter().enumerate() {
-        println!("Test {}: {}", i + 1, description);
-        println!("Code: {}", source.trim());
-        
-        match parse_program(source) {
-            Some(ast) => {
-                match run_ast(&mut vec![ast]) {
-                    Ok(_) => println!("Result: PASSED semantic analysis"),
-                    Err(e) => println!("Result: FAILED - {}", e),
+// Core recursive function - similar structure to your process_node
+fn recursive_inline_calls(
+    node: &mut ASTNode,
+    function_map: &HashMap<String, FuncInfo>,
+    call_counter: &mut usize,
+    all_scopes: &mut Vec<Scope>,
+    scope_stack: &mut Vec<String>,
+    block_counter: &mut usize
+) -> Result<(), String> {
+    match node {
+        // THE MAIN EVENT: Your ASTNode::FunctionCall pattern
+        ASTNode::FunctionCall { name, args } => {
+            if let Some(func_info) = function_map.get(name) {
+                *call_counter += 1;
+                let call_id = *call_counter;
+                
+                // Generate unique scope label using your labeling system
+                let current_scope = scope_stack.last().unwrap();
+                let call_scope = format!("{}.call{}.{}", current_scope, call_id, name);
+                scope_stack.push(call_scope.clone());
+                
+                // Clone and rename function body
+                let mut inlined_body = (*func_info.body).clone();
+                rename_variables_in_node(&mut inlined_body, &call_scope);
+                
+                // Create parameter initialization statements using your VariableDeclaration pattern
+                let param_inits = create_parameter_assignments(
+                    &func_info.params, 
+                    args, 
+                    &call_scope
+                );
+                
+                // Handle return value
+                let return_var = format!("{}_return", call_scope.replace(".", "_"));
+                replace_return_statements(&mut inlined_body, &return_var);
+                
+                // Assemble final block using your ASTNode::Block pattern
+                let mut final_statements = param_inits;
+                if let ASTNode::Block(statements) = inlined_body {
+                    final_statements.extend(statements);
                 }
-            },
-            None => println!("Result: FAILED - Parse error"),
-        } 
-        println!("{}", "-".repeat(60));
+                
+                // Replace this call node with the inlined block
+                *node = ASTNode::Block(final_statements);
+                
+                scope_stack.pop();
+                
+                // Recursively inline any nested calls in the new block
+                recursive_inline_calls(node, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            } else {
+                return Err(format!("Function {} not found", name));
+            }
+        },
+        
+        // Use your exact ASTNode patterns for recursion
+        ASTNode::Block(statements) => {
+            for stmt in statements.iter_mut() {
+                recursive_inline_calls(stmt, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            }
+        },
+        
+        ASTNode::If { condition, then_branch, else_branch } => {
+            recursive_inline_calls(condition, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            recursive_inline_calls(then_branch, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            if let Some(else_node) = else_branch {
+                recursive_inline_calls(else_node, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            }
+        },
+        
+        ASTNode::While { condition, body } => {
+            recursive_inline_calls(condition, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            recursive_inline_calls(body, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+        },
+        
+        ASTNode::For { init, condition, increment, body } => {
+            recursive_inline_calls(init, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            recursive_inline_calls(condition, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            recursive_inline_calls(increment, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+            recursive_inline_calls(body, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+        },
+        
+        ASTNode::VariableDeclaration { initial_value: Some(value), .. } => {
+            recursive_inline_calls(value, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+        },
+        
+        ASTNode::Assignment { value, .. } => {
+            recursive_inline_calls(value, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+        },
+        
+        ASTNode::PutChar { expr } => {
+            recursive_inline_calls(expr, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
+        },
+        
+        // Base cases - your literal patterns don't need recursion
+        ASTNode::LiteralInt(_) | ASTNode::LiteralChar(_) | ASTNode::LiteralString(_) | 
+        ASTNode::Identifier(_) | ASTNode::Break | ASTNode::Continue | ASTNode::Empty => {},
+        
+        _ => {} // Handle any other patterns
+    }
+    
+    Ok(())
+}
+
+// Helper function using your VariableDeclaration pattern
+fn create_parameter_assignments(
+    params: &Vec<(Keywords, String)>,
+    args: &Vec<ASTNode>,
+    scope_label: &str
+) -> Vec<ASTNode> {
+    let mut assignments = Vec::new();
+    
+    for (i, (param_type, param_name)) in params.iter().enumerate() {
+        if i < args.len() {
+            let scoped_name = format!("{}_{}", scope_label.replace(".", "_"), param_name);
+            
+            assignments.push(ASTNode::VariableDeclaration {
+                var_type: param_type.clone(),
+                name: scoped_name,
+                array_dims: None, // Using your field name
+                initial_value: Some(Box::new(args[i].clone())),
+            });
+        }
+    }
+    
+    assignments
+}
+
+// Variable renaming using your ASTNode patterns
+fn rename_variables_in_node(node: &mut ASTNode, scope_label: &str) {
+    match node {
+        ASTNode::Identifier(name) => {
+            *name = format!("{}_{}", scope_label.replace(".", "_"), name);
+        },
+        
+        ASTNode::VariableDeclaration { name, initial_value, .. } => {
+            *name = format!("{}_{}", scope_label.replace(".", "_"), name);
+            if let Some(value) = initial_value {
+                rename_variables_in_node(value, scope_label);
+            }
+        },
+        
+        ASTNode::Assignment { target, value } => {
+            rename_variables_in_node(target, scope_label);
+            rename_variables_in_node(value, scope_label);
+        },
+        
+        ASTNode::Block(statements) => {
+            for stmt in statements {
+                rename_variables_in_node(stmt, scope_label);
+            }
+        },
+        
+        // Handle all your other patterns...
+        _ => {}
+    }
+}
+
+// Return statement replacement using your patterns
+fn replace_return_statements(node: &mut ASTNode, return_var: &str) {
+    match node {
+        ASTNode::Return(Some(value)) => {
+            *node = ASTNode::Assignment {
+                target: Box::new(ASTNode::Identifier(return_var.to_string())),
+                value: value.clone(),
+            };
+        },
+        
+        ASTNode::Block(statements) => {
+            for stmt in statements {
+                replace_return_statements(stmt, return_var);
+            }
+        },
+        
+        // Handle other patterns that might contain returns
+        _ => {}
+    }
+}
+fn main() {
+    println!("🚀 Testing Function Inlining 🚀\n");
+    
+    // Simple test program with function calls
+    let test_program = r#"
+        int add(int a, int b) {
+            return a + b;
+        }
+        
+        int main() {
+            int x = 5;
+            int y = 3;
+            int result = add(x, y);
+            putchar(result);
+            return 0;
+        }
+    "#;
+    
+    println!("Original C Program:");
+    println!("{}", test_program);
+    println!("{}\n", "=".repeat(60));
+    
+    // Step 1: Parse the program
+    println!("Step 1: Parsing...");
+    let ast_result = parse_program(test_program);
+    
+    match ast_result {
+        Some(ASTNode::Program(mut declarations)) => {
+            println!("✅ Parsed {} declarations\n", declarations.len());
+            
+            // Step 2: Semantic analysis
+            println!("Step 2: Semantic Analysis...");
+            match run_ast(&mut declarations) {
+                Ok(semantic_ast) => {
+                    println!("✅ Semantic analysis passed!\n");
+                    
+                    // Print AST before inlining
+                    println!("AST Before Inlining:");
+                    print_ast_simple(&semantic_ast);
+                    println!("{}\n", "=".repeat(60));
+                    
+                    // Step 3: Function inlining (THE TEST!)
+                    println!("Step 3: Function Inlining...");
+                    let mut inlining_ast = semantic_ast;
+                    
+                    match inline_all_functions(&mut inlining_ast) {
+                        Ok(inlined_ast) => {
+                            println!("✅ Function inlining completed!\n");
+                            
+                            // Print AST after inlining
+                            println!("AST After Inlining:");
+                            print_ast_simple(&inlined_ast);
+                            
+                            println!("\n🎉 SUCCESS: Inlining test completed!");
+                            
+                            // Show the main function specifically
+                            for node in &inlined_ast {
+                                if let ASTNode::Function { name, body, .. } = node {
+                                    if name == "main" {
+                                        println!("\n📋 Main function after inlining:");
+                                        print_ast_detailed(body, 1);
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            println!("❌ Inlining failed: {}", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    println!("❌ Semantic analysis failed: {}", e);
+                }
+            }
+        }
+        Some(_) => {
+            println!("❌ Expected Program AST node");
+        }
+        None => {
+            println!("❌ Failed to parse program");
+        }
+    }
+}
+
+// Simple AST printer
+fn print_ast_simple(ast: &Vec<ASTNode>) {
+    for (i, node) in ast.iter().enumerate() {
+        println!("{}. {:?}", i + 1, node);
+    }
+}
+
+// Detailed AST printer for nested structures
+fn print_ast_detailed(node: &ASTNode, indent: usize) {
+    let spaces = "  ".repeat(indent);
+    
+    match node {
+        ASTNode::Block(statements) => {
+            println!("{}Block with {} statements:", spaces, statements.len());
+            for (i, stmt) in statements.iter().enumerate() {
+                println!("{}  Statement {}:", spaces, i + 1);
+                print_ast_detailed(stmt, indent + 2);
+            }
+        }
+        ASTNode::VariableDeclaration { var_type, name, initial_value, .. } => {
+            println!("{}VarDecl: {:?} {} = {:?}", spaces, var_type, name, initial_value);
+        }
+        ASTNode::Assignment { target, value } => {
+            println!("{}Assignment: {:?} = {:?}", spaces, target, value);
+        }
+        ASTNode::FunctionCall { name, args } => {
+            println!("{}FunctionCall: {}({} args)", spaces, name, args.len());
+        }
+        ASTNode::PutChar { expr } => {
+            println!("{}PutChar: {:?}", spaces, expr);
+        }
+        ASTNode::Return(expr) => {
+            println!("{}Return: {:?}", spaces, expr);
+        }
+        _ => {
+            println!("{}{:?}", spaces, node);
+        }
     }
 }
