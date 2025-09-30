@@ -1696,6 +1696,377 @@ Big design choice change:
      but hey I am not spending another week procrastinating an insert_inline function
      So chat gpt said no body has done it before since I guess nobody is on meth writing a compiler
 */
-fn rewrite_source(&mut source: String) -> String{
+use regex::Regex;
+
+#[derive(Clone, Debug)]
+struct FunctionSignature {
+    name: String,
+    params: Vec<String>,
+    body: String,
+}
+
+static mut INLINE_COUNTER: usize = 0;
+
+/// Main entry: extract functions, inline them, remove declarations
+pub fn clean_source(source: &str) -> String {
+    unsafe { INLINE_COUNTER = 0; }
     
+    let funcs = extract_functions(source);
+    
+    if funcs.is_empty() {
+        println!("[INLINE] No functions to inline");
+        return source.to_string();
+    }
+    
+    println!("[INLINE] Found {} functions", funcs.len());
+    
+    let mut result = source.to_string();
+    
+    // Iteratively inline until no changes
+    let mut i = 0;
+    for _ in 0..50 {
+        println!("[INLINE] Inlining pass {}", i + 1);
+        let before = result.clone();
+        
+        for func in funcs.values() {
+            result = inline_function(&result, func);
+        }
+        
+        if result == before {
+            break;
+        }
+        i = i+1;
+    }
+    
+    // Remove function declarations
+    result = remove_functions(&result, &funcs);
+    
+    println!("[INLINE] Inlining complete");
+    result
+}
+
+/// Extract all function signatures from source
+fn extract_functions(source: &str) -> HashMap<String, FunctionSignature> {
+    let mut funcs = HashMap::new();
+    
+    let re = Regex::new(r"(?s)(int|char|void)\s+(\w+)\s*\(([^)]*)\)\s*\{([^{}]*(?:\{[^{}]*\}[^{}]*)*)\}").unwrap();
+    
+    for cap in re.captures_iter(source) {
+        let name = cap[2].to_string();
+        
+        if name == "main" {
+            continue;
+        }
+        
+        let params: Vec<String> = cap[3]
+            .split(',')
+            .filter_map(|p| p.trim().split_whitespace().last())
+            .map(|s| s.to_string())
+            .collect();
+        
+        let body = cap[4].trim().to_string();
+        
+        funcs.insert(name.clone(), FunctionSignature { name, params, body });
+    }
+    
+    funcs
+}
+
+/// Inline all calls to a specific function
+fn inline_function(source: &str, func: &FunctionSignature) -> String {
+    let mut result = source.to_string();
+    let mut search_pos = 0;
+    
+    loop {
+        let Some(rel_pos) = result[search_pos..].find(&func.name) else {
+            break;
+        };
+        
+        let pos = search_pos + rel_pos;
+        
+        if is_declaration(&result, pos) {
+            search_pos = pos + func.name.len();
+            continue;
+        }
+        
+        let after = pos + func.name.len();
+        if after >= result.len() || !result[after..].trim_start().starts_with('(') {
+            search_pos = pos + func.name.len();
+            continue;
+        }
+        
+        let paren_start = after + result[after..].find('(').unwrap();
+        let Some(paren_end) = find_matching_paren(&result, paren_start) else {
+            search_pos = pos + func.name.len();
+            continue;
+        };
+        
+        let args_str = &result[paren_start + 1..paren_end];
+        let args = parse_args(args_str);
+        
+        // Find statement start
+        let stmt_start = find_statement_start(&result, pos);
+        
+        // Generate inline code split into statements and result var
+        let (inline_stmts, result_var) = generate_inline_split(func, &args);
+        
+        // Build new result: inject statements before current statement
+        let mut new_result = String::new();
+        new_result.push_str(&result[..stmt_start]);     // Before statement
+        new_result.push_str(&inline_stmts);              // Injected statements
+        new_result.push_str(&result[stmt_start..pos]);  // Statement up to call
+        new_result.push_str(&result_var);                // Replace call with var
+        new_result.push_str(&result[paren_end + 1..]);  // Rest after call
+        
+        result = new_result;
+        search_pos = 0; // Restart from beginning
+    }
+    
+    result
+}
+
+/// Find start of current statement (last ';' or '{' before pos)
+fn find_statement_start(source: &str, pos: usize) -> usize {
+    let chars: Vec<char> = source.chars().collect();
+    
+    for i in (0..pos).rev() {
+        if chars[i] == ';' || chars[i] == '{' {
+            // Move past the ';' or '{'
+            return i + 1;
+        }
+    }
+    
+    0
+}
+
+/// Check if position is a function declaration
+fn is_declaration(source: &str, pos: usize) -> bool {
+    let before = &source[..pos];
+    let words: Vec<&str> = before.split_whitespace().collect();
+    
+    if let Some(last) = words.last() {
+        if *last == "int" || *last == "char" || *last == "void" {
+            return true;
+        }
+    }
+    
+    false
+}
+
+/// Find matching closing parenthesis
+fn find_matching_paren(source: &str, open: usize) -> Option<usize> {
+    let chars: Vec<char> = source.chars().collect();
+    let mut depth = 1;
+    
+    for i in (open + 1)..chars.len() {
+        match chars[i] {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    
+    None
+}
+
+/// Parse arguments, respecting nested calls
+fn parse_args(args_str: &str) -> Vec<String> {
+    if args_str.trim().is_empty() {
+        return vec![];
+    }
+    
+    let mut args = Vec::new();
+    let mut current = String::new();
+    let mut depth = 0;
+    
+    for ch in args_str.chars() {
+        match ch {
+            '(' => {
+                depth += 1;
+                current.push(ch);
+            }
+            ')' => {
+                depth -= 1;
+                current.push(ch);
+            }
+            ',' if depth == 0 => {
+                args.push(current.trim().to_string());
+                current.clear();
+            }
+            _ => current.push(ch),
+        }
+    }
+    
+    if !current.trim().is_empty() {
+        args.push(current.trim().to_string());
+    }
+    
+    args
+}
+
+/// Generate inline code as (statements, result_variable)
+fn generate_inline_split(func: &FunctionSignature, args: &[String]) -> (String, String) {
+    let id = unsafe {
+        INLINE_COUNTER += 1;
+        INLINE_COUNTER
+    };
+    
+    let prefix = format!("__inl_{}_{}", func.name, id);
+    let mut stmts = String::new();
+    
+    // Declare argument temps
+    let arg_vars: Vec<String> = (0..args.len())
+        .map(|i| format!("{}_arg{}", prefix, i))
+        .collect();
+    
+    for (i, arg) in args.iter().enumerate() {
+        stmts.push_str(&format!("int {} = {}; ", arg_vars[i], arg));
+    }
+    
+    // Copy body and replace params with arg vars
+    let mut body = func.body.clone();
+    
+    for (param, arg_var) in func.params.iter().zip(arg_vars.iter()) {
+        let re = Regex::new(&format!(r"\b{}\b", regex::escape(param))).unwrap();
+        body = re.replace_all(&body, arg_var.as_str()).to_string();
+    }
+    
+    // Replace return with assignment
+    let ret_var = format!("{}_ret", prefix);
+    let re = Regex::new(r"return\s+([^;]+);").unwrap();
+    
+    body = re.replace_all(&body, |caps: &regex::Captures| {
+        format!("int {} = {}; ", ret_var, &caps[1])
+    }).to_string();
+    
+    stmts.push_str(&body);
+    
+    (stmts, ret_var)
+}
+
+/// Remove function declarations
+fn remove_functions(source: &str, funcs: &HashMap<String, FunctionSignature>) -> String {
+    let mut result = source.to_string();
+    
+    for func in funcs.values() {
+        let pattern = format!(
+            r"(?s)(int|char|void)\s+{}\s*\([^)]*\)\s*\{{[^{{}}]*(?:\{{[^{{}}]*\}}[^{{}}]*)*\}}",
+            regex::escape(&func.name)
+        );
+        
+        if let Ok(re) = Regex::new(&pattern) {
+            result = re.replace_all(&result, "").to_string();
+        }
+    }
+    
+    result
+}
+
+fn main() {
+    // Proper C source code syntax
+    let source_code = r#"
+
+int max(int a, int b) {
+    if (a > b) {
+        return a;
+    }
+    return b;
+}
+
+int min(int a, int b) {
+    if (a < b) {
+        return a;
+    }
+    return b;
+}
+
+int clamp(int value, int low, int high) {
+    int result = max(low, value);
+    result = min(result, high);
+    return result;
+}
+
+int main() {
+    int x = clamp(max(1, 2), min(3, 4), 10);
+    putchar(x);
+    return 0;
+}
+
+"#;
+
+    println!("=== C to Brainfuck Compiler ===\n");
+    
+    // ============ PASS 1: Parse & Semantic Analysis (Original) ============
+    println!("📝 PASS 1: Parsing original source...");
+    let ast = match parse_program(source_code) {
+        Some(ast) => {
+            println!("✓ Parsing successful!");
+            ast
+        },
+        None => {
+            eprintln!("✗ Parsing failed!");
+            return;
+        }
+    };
+
+    println!("\n🔍 PASS 1: Running semantic analysis...");
+    let mut ast_vec = if let ASTNode::Program(decls) = ast {
+        decls
+    } else {
+        vec![ast]
+    };
+
+    match run_ast(&mut ast_vec) {
+        Ok(_) => println!("✓ Semantic analysis passed!"),
+        Err(e) => {
+            eprintln!("✗ Semantic error: {}", e);
+            return;
+        }
+    }
+
+    // ============ PASS 2: Inline Functions (Source-to-Source) ============
+    println!("\n⚡ PASS 2: Inlining functions...");
+    let inlined_source = clean_source(source_code);
+    
+    println!("Inlined source:\n{}", inlined_source);
+
+    // ============ PASS 3: Re-Parse & Re-Analyze (Inlined) ============
+    println!("\n📝 PASS 3: Parsing inlined source...");
+    let inlined_ast = match parse_program(&inlined_source) {
+        Some(ast) => {
+            println!("✓ Parsing successful!");
+            ast
+        },
+        None => {
+            eprintln!("✗ Parsing failed after inlining!");
+            return;
+        }
+    };
+
+    println!("\n🔍 PASS 3: Running semantic analysis on inlined code...");
+    let mut inlined_ast_vec = if let ASTNode::Program(decls) = inlined_ast {
+        decls
+    } else {
+        vec![inlined_ast]
+    };
+
+    match run_ast(&mut inlined_ast_vec) {
+        Ok(validated_ast) => {
+            println!("Inlined and validated AST:\n{:#?}", validated_ast);
+            println!("✓ Semantic analysis passed!");
+            println!("\n✨ Compilation successful! Ready for IR/Brainfuck generation.");
+            
+            // ============ PASS 4: Generate IR / Brainfuck (TODO) ============
+            // let brainfuck = generate_brainfuck(&validated_ast);
+            // println!("\n🎉 Brainfuck output:\n{}", brainfuck);
+        },
+        Err(e) => {
+            eprintln!("✗ Semantic error after inlining: {}", e);
+        }
+    }
 }
