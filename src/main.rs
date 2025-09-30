@@ -1662,371 +1662,40 @@ fn types_compatible(expected: &Keywords, found: &Keywords) -> bool {
     }
 }
 
-// next is to implement the inlining function : since we already walked the tree once it's best to pattern match and 
-// Just got the "AHA" moment of the century rn
-// We will use the scopes and varInfo and funcInfo to do the inlining for us instead of having a seperate symbols tables and counter
-// We can just use the existing ones and add a few more fields if needed
-// And fuck it we are doing it in two passes one for inlining and one for the IR and taping
+/*
+Big design choice change:
+    Since adding a new ASTNode variant requires updating multiple functions,
+    I've decided to generate a pre IR variant of the AST tree to accomodate the renamed and inlined function
+    Or just generate the IR straight up from this semantic analysis done AST
+    Or Add it such that it doesn't change the code structure and it's just vec<ASTNode> rather than a seperate ASTnode
+    The latest approach is feasible than generate an entire Pre IR layer and updating all functions but requires some serious 
+    Changes to the AST structure if we were to snuck some vec<ASTNode> so here are the steps
+        Write a helper to rearrange the AST with sneaking in the vec<ASTNode>
+        Write a helper to generate the inline_function(&ast, counter, Scope) -> (vec<ASTNode)
+        Write the filter pass inline_program(&mut ast) -> vec<ASTNode>, tape offsets as input to the next pass that is the actual IR
 
-//---------------------------------Pre-IR (inlining) ---------------------------------------------------
-// Unfortunately we cannot use the scopes anywhere here since we dynamically used them in run_ast and never stored any
-// So we will have to build that ourselfs everytime a function is to be inlined
-// Fortunately however, we are only gonna be doing this n times if n being number of functions declared
-// Since it's gonna be recursive and all the calls with "name" will be inlined in one call
-fn inline_all_functions(ast: &mut Vec<ASTNode>) -> Result<Vec<ASTNode>, String> {
-    // Internal state management - just like your run_ast function
-    let mut call_counter = 0usize;
-    let mut all_scopes: Vec<Scope> = Vec::new();
-    let mut scope_stack: Vec<String> = vec!["global".to_string()];
-    let mut block_counter = 0usize;
-    
-    // Phase 1: Build function map from the AST using your existing FuncInfo
-    let mut function_map: HashMap<String, FuncInfo> = HashMap::new();
-    extract_functions_from_ast(ast, &mut function_map)?;
-    
-    // Phase 2: Find main function and inline all calls within it
-    for node in ast.iter_mut() {
-        if let ASTNode::Function { return_type: _, name, params: _, body } = node {
-            if name == "main" {
-                recursive_inline_calls(
-                    body, 
-                    &function_map, 
-                    &mut call_counter,
-                    &mut all_scopes,
-                    &mut scope_stack,
-                    &mut block_counter
-                )?;
-                break;
-            }
-        }
-    }
-    
-    // Phase 3: Clean up - remove all function declarations except main
-    ast.retain(|node| {
-        match node {
-            ASTNode::Function { name, .. } => name == "main",
-            _ => true
-        }
-    });
-    
-    Ok(ast.clone())
-}
+    That is today's challenge! Lets fuck this bitch in the ass
+ */
 
-// Extract functions using your existing ASTNode::Function pattern
-fn extract_functions_from_ast(
-    ast: &Vec<ASTNode>, 
-    function_map: &mut HashMap<String, FuncInfo>
-) -> Result<(), String> {
-    for node in ast {
-        if let ASTNode::Function { return_type, name, params, body } = node {
-            let func_info = FuncInfo {
-                return_type: return_type.clone(),
-                params: params.clone(),
-                body: body.clone(),
-            };
-            function_map.insert(name.clone(), func_info);
-        }
-    }
-    Ok(())
-}
-
-// Core recursive function - similar structure to your process_node
-fn recursive_inline_calls(
-    node: &mut ASTNode,
-    function_map: &HashMap<String, FuncInfo>,
-    call_counter: &mut usize,
-    all_scopes: &mut Vec<Scope>,
-    scope_stack: &mut Vec<String>,
-    block_counter: &mut usize
-) -> Result<(), String> {
-    match node {
-        // THE MAIN EVENT: Your ASTNode::FunctionCall pattern
-        ASTNode::FunctionCall { name, args } => {
-            if let Some(func_info) = function_map.get(name) {
-                *call_counter += 1;
-                let call_id = *call_counter;
-                
-                // Generate unique scope label using your labeling system
-                let current_scope = scope_stack.last().unwrap();
-                let call_scope = format!("{}.call{}.{}", current_scope, call_id, name);
-                scope_stack.push(call_scope.clone());
-                
-                // Clone and rename function body
-                let mut inlined_body = (*func_info.body).clone();
-                rename_variables_in_node(&mut inlined_body, &call_scope);
-                
-                // Create parameter initialization statements using your VariableDeclaration pattern
-                let param_inits = create_parameter_assignments(
-                    &func_info.params, 
-                    args, 
-                    &call_scope
-                );
-                
-                // Handle return value
-                let return_var = format!("{}_return", call_scope.replace(".", "_"));
-                replace_return_statements(&mut inlined_body, &return_var);
-                
-                // Assemble final block using your ASTNode::Block pattern
-                let mut final_statements = param_inits;
-                if let ASTNode::Block(statements) = inlined_body {
-                    final_statements.extend(statements);
-                }
-                
-                // Replace this call node with the inlined block
-                *node = ASTNode::Block(final_statements);
-                
-                scope_stack.pop();
-                
-                // Recursively inline any nested calls in the new block
-                recursive_inline_calls(node, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            } else {
-                return Err(format!("Function {} not found", name));
-            }
-        },
-        
-        // Use your exact ASTNode patterns for recursion
-        ASTNode::Block(statements) => {
-            for stmt in statements.iter_mut() {
-                recursive_inline_calls(stmt, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            }
-        },
-        
-        ASTNode::If { condition, then_branch, else_branch } => {
-            recursive_inline_calls(condition, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            recursive_inline_calls(then_branch, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            if let Some(else_node) = else_branch {
-                recursive_inline_calls(else_node, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            }
-        },
-        
-        ASTNode::While { condition, body } => {
-            recursive_inline_calls(condition, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            recursive_inline_calls(body, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-        },
-        
-        ASTNode::For { init, condition, increment, body } => {
-            recursive_inline_calls(init, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            recursive_inline_calls(condition, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            recursive_inline_calls(increment, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-            recursive_inline_calls(body, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-        },
-        
-        ASTNode::VariableDeclaration { initial_value: Some(value), .. } => {
-            recursive_inline_calls(value, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-        },
-        
-        ASTNode::Assignment { value, .. } => {
-            recursive_inline_calls(value, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-        },
-        
-        ASTNode::PutChar { expr } => {
-            recursive_inline_calls(expr, function_map, call_counter, all_scopes, scope_stack, block_counter)?;
-        },
-        
-        // Base cases - your literal patterns don't need recursion
-        ASTNode::LiteralInt(_) | ASTNode::LiteralChar(_) | ASTNode::LiteralString(_) | 
-        ASTNode::Identifier(_) | ASTNode::Break | ASTNode::Continue | ASTNode::Empty => {},
-        
-        _ => {} // Handle any other patterns
-    }
+ /*
+ Turns out insert_inline function that should recursively insert ASTNodes inplace of a single ASTNode is extremely fidely
+ So MY master brain came up with what I call the most shittiest plan in the fucking century i.e:
+    ***Modify the source code itself***
+    Hear me out... What if we generate the inline function as a string and just do some simple string manip and re run tokenize, parser and the semantic analysis
+    I know it's just really waste out resources but, hear me out... it's just some simple string manip than tree traversal
+    And most importantnly we can remove func declarations, rename variables, inline functions and dead code elimination in single pass
+    So yeah That's the master plan
+  */
+/*
+    And another master plan with greatest danger and trade offs :
+    And here is why a pre tokenize inlining will be bad and good: bad if u are to print out the error, 
+    the user doesn't know ur renamed variable and they be like what the fuck ?? and the good if it's just a compiler form C to BF,
+     cuz u don't want to print out if the C is right or no? 
+     and if I really want to print out the thing too, i would have to maintain another hash map from user_var to renamed and yeah dead code elimination is a hazard after wards, 
+     SOO I guess inline_pass after the first semantic analysis would be good and have similar problems 
+     but hey I am not spending another week procrastinating an insert_inline function
+     So chat gpt said no body has done it before since I guess nobody is on meth writing a compiler
+*/
+fn rewrite_source(&mut source: String) -> String{
     
-    Ok(())
-}
-
-// Helper function using your VariableDeclaration pattern
-fn create_parameter_assignments(
-    params: &Vec<(Keywords, String)>,
-    args: &Vec<ASTNode>,
-    scope_label: &str
-) -> Vec<ASTNode> {
-    let mut assignments = Vec::new();
-    
-    for (i, (param_type, param_name)) in params.iter().enumerate() {
-        if i < args.len() {
-            let scoped_name = format!("{}_{}", scope_label.replace(".", "_"), param_name);
-            
-            assignments.push(ASTNode::VariableDeclaration {
-                var_type: param_type.clone(),
-                name: scoped_name,
-                array_dims: None, // Using your field name
-                initial_value: Some(Box::new(args[i].clone())),
-            });
-        }
-    }
-    
-    assignments
-}
-
-// Variable renaming using your ASTNode patterns
-fn rename_variables_in_node(node: &mut ASTNode, scope_label: &str) {
-    match node {
-        ASTNode::Identifier(name) => {
-            *name = format!("{}_{}", scope_label.replace(".", "_"), name);
-        },
-        
-        ASTNode::VariableDeclaration { name, initial_value, .. } => {
-            *name = format!("{}_{}", scope_label.replace(".", "_"), name);
-            if let Some(value) = initial_value {
-                rename_variables_in_node(value, scope_label);
-            }
-        },
-        
-        ASTNode::Assignment { target, value } => {
-            rename_variables_in_node(target, scope_label);
-            rename_variables_in_node(value, scope_label);
-        },
-        
-        ASTNode::Block(statements) => {
-            for stmt in statements {
-                rename_variables_in_node(stmt, scope_label);
-            }
-        },
-        
-        // Handle all your other patterns...
-        _ => {}
-    }
-}
-
-// Return statement replacement using your patterns
-fn replace_return_statements(node: &mut ASTNode, return_var: &str) {
-    match node {
-        ASTNode::Return(Some(value)) => {
-            *node = ASTNode::Assignment {
-                target: Box::new(ASTNode::Identifier(return_var.to_string())),
-                value: value.clone(),
-            };
-        },
-        
-        ASTNode::Block(statements) => {
-            for stmt in statements {
-                replace_return_statements(stmt, return_var);
-            }
-        },
-        
-        // Handle other patterns that might contain returns
-        _ => {}
-    }
-}
-fn main() {
-    println!("🚀 Testing Function Inlining 🚀\n");
-    
-    // Simple test program with function calls
-    let test_program = r#"
-        int add(int a, int b) {
-            return a + b;
-        }
-        
-        int main() {
-            int x = 5;
-            int y = 3;
-            int result = add(x, y);
-            putchar(result);
-            return 0;
-        }
-    "#;
-    
-    println!("Original C Program:");
-    println!("{}", test_program);
-    println!("{}\n", "=".repeat(60));
-    
-    // Step 1: Parse the program
-    println!("Step 1: Parsing...");
-    let ast_result = parse_program(test_program);
-    
-    match ast_result {
-        Some(ASTNode::Program(mut declarations)) => {
-            println!("✅ Parsed {} declarations\n", declarations.len());
-            
-            // Step 2: Semantic analysis
-            println!("Step 2: Semantic Analysis...");
-            match run_ast(&mut declarations) {
-                Ok(semantic_ast) => {
-                    println!("✅ Semantic analysis passed!\n");
-                    
-                    // Print AST before inlining
-                    println!("AST Before Inlining:");
-                    print_ast_simple(&semantic_ast);
-                    println!("{}\n", "=".repeat(60));
-                    
-                    // Step 3: Function inlining (THE TEST!)
-                    println!("Step 3: Function Inlining...");
-                    let mut inlining_ast = semantic_ast;
-                    
-                    match inline_all_functions(&mut inlining_ast) {
-                        Ok(inlined_ast) => {
-                            println!("✅ Function inlining completed!\n");
-                            
-                            // Print AST after inlining
-                            println!("AST After Inlining:");
-                            print_ast_simple(&inlined_ast);
-                            
-                            println!("\n🎉 SUCCESS: Inlining test completed!");
-                            
-                            // Show the main function specifically
-                            for node in &inlined_ast {
-                                if let ASTNode::Function { name, body, .. } = node {
-                                    if name == "main" {
-                                        println!("\n📋 Main function after inlining:");
-                                        print_ast_detailed(body, 1);
-                                    }
-                                }
-                            }
-                        }
-                        Err(e) => {
-                            println!("❌ Inlining failed: {}", e);
-                        }
-                    }
-                }
-                Err(e) => {
-                    println!("❌ Semantic analysis failed: {}", e);
-                }
-            }
-        }
-        Some(_) => {
-            println!("❌ Expected Program AST node");
-        }
-        None => {
-            println!("❌ Failed to parse program");
-        }
-    }
-}
-
-// Simple AST printer
-fn print_ast_simple(ast: &Vec<ASTNode>) {
-    for (i, node) in ast.iter().enumerate() {
-        println!("{}. {:?}", i + 1, node);
-    }
-}
-
-// Detailed AST printer for nested structures
-fn print_ast_detailed(node: &ASTNode, indent: usize) {
-    let spaces = "  ".repeat(indent);
-    
-    match node {
-        ASTNode::Block(statements) => {
-            println!("{}Block with {} statements:", spaces, statements.len());
-            for (i, stmt) in statements.iter().enumerate() {
-                println!("{}  Statement {}:", spaces, i + 1);
-                print_ast_detailed(stmt, indent + 2);
-            }
-        }
-        ASTNode::VariableDeclaration { var_type, name, initial_value, .. } => {
-            println!("{}VarDecl: {:?} {} = {:?}", spaces, var_type, name, initial_value);
-        }
-        ASTNode::Assignment { target, value } => {
-            println!("{}Assignment: {:?} = {:?}", spaces, target, value);
-        }
-        ASTNode::FunctionCall { name, args } => {
-            println!("{}FunctionCall: {}({} args)", spaces, name, args.len());
-        }
-        ASTNode::PutChar { expr } => {
-            println!("{}PutChar: {:?}", spaces, expr);
-        }
-        ASTNode::Return(expr) => {
-            println!("{}Return: {:?}", spaces, expr);
-        }
-        _ => {
-            println!("{}{:?}", spaces, node);
-        }
-    }
 }
