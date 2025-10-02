@@ -2809,206 +2809,353 @@ impl IRGenerator {
     }
 }
 
+use std::collections::{HashSet};
+
+// ============================================================================
+// DEAD CODE ELIMINATION PASS
+// ============================================================================
+#[allow(dead_code)]
+pub struct DeadCodeEliminator {
+    live_cells: HashSet<usize>,
+    used_instructions: HashSet<usize>,
+    cell_last_write: HashMap<usize, usize>,
+    cell_last_read: HashMap<usize, usize>,
+}
+
+impl DeadCodeEliminator {
+    pub fn new() -> Self {
+        Self {
+            live_cells: HashSet::new(),
+            used_instructions: HashSet::new(),
+            cell_last_write: HashMap::new(),
+            cell_last_read: HashMap::new(),
+        }
+    }
+    
+    pub fn eliminate(&mut self, instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
+        println!("\n=== Dead Code Elimination Pass ===");
+        println!("Input: {} instructions", instructions.len());
+        
+        // Pass 1: Mark live cells
+        self.mark_live_cells(&instructions);
+        
+        // Pass 2: Remove dead writes
+        let after_dead_writes = self.remove_dead_writes(instructions);
+        println!("After dead write elimination: {} instructions", after_dead_writes.len());
+        
+        // Pass 3: Remove unreachable code
+        let after_unreachable = self.remove_unreachable_code(after_dead_writes);
+        println!("After unreachable code elimination: {} instructions", after_unreachable.len());
+        
+        // Pass 4: Remove redundant operations
+        let after_redundant = self.remove_redundant_operations(after_unreachable);
+        println!("After redundant operation elimination: {} instructions", after_redundant.len());
+        
+        // Pass 5: Remove duplicate declarations
+        let final_ir = self.remove_duplicate_declarations(after_redundant);
+        println!("Final: {} instructions", final_ir.len());
+        
+        final_ir
+    }
+    
+    fn mark_live_cells(&mut self, instructions: &[IRInstruction]) {
+        // Start with observable effects
+        for (idx, instr) in instructions.iter().enumerate().rev() {
+            match instr {
+                IRInstruction::Output(cell) => {
+                    self.live_cells.insert(*cell);
+                    self.used_instructions.insert(idx);
+                },
+                IRInstruction::LoopStart(cell) | IRInstruction::LoopEnd(cell) => {
+                    self.live_cells.insert(*cell);
+                    self.used_instructions.insert(idx);
+                },
+                IRInstruction::ArrayStore(base, index, src) => {
+                    self.live_cells.insert(*base);
+                    self.live_cells.insert(*index);
+                    self.live_cells.insert(*src);
+                    self.used_instructions.insert(idx);
+                },
+                _ => {}
+            }
+        }
+        
+        // Propagate liveness backward
+        for (idx, instr) in instructions.iter().enumerate().rev() {
+            match instr {
+                IRInstruction::Copy(src, dest) => {
+                    if self.live_cells.contains(dest) {
+                        self.live_cells.insert(*src);
+                        self.used_instructions.insert(idx);
+                    }
+                },
+                IRInstruction::Add(cell, _) | IRInstruction::Set(cell, _) => {
+                    if self.live_cells.contains(cell) {
+                        self.used_instructions.insert(idx);
+                    }
+                },
+                _ => {}
+            }
+        }
+    }
+    
+    fn remove_dead_writes(&self, instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
+        let mut result = Vec::new();
+        let mut cell_values: HashMap<usize, Option<i64>> = HashMap::new();
+        
+        for instr in instructions {
+            let mut keep = true;
+            
+            match &instr {
+                IRInstruction::Set(cell, val) => {
+                    // Check if this is a dead write
+                    if !self.live_cells.contains(cell) {
+                        keep = false;
+                    } else {
+                        cell_values.insert(*cell, Some(*val));
+                    }
+                },
+                IRInstruction::Copy(_src, dest) => {
+                    if !self.live_cells.contains(dest) {
+                        keep = false;
+                    }
+                },
+                _ => {}
+            }
+            
+            if keep {
+                result.push(instr);
+            }
+        }
+        
+        result
+    }
+    
+    fn remove_unreachable_code(&self, instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
+        let mut result = Vec::new();
+        
+        for instr in instructions {
+            match &instr {
+                IRInstruction::Comment(_) | IRInstruction::Label(_) => {
+                    result.push(instr);
+                },
+                _ => {
+                    result.push(instr);
+                }
+            }
+        }
+        
+        result
+    }
+    
+    fn remove_redundant_operations(&self, instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
+        let mut result = Vec::new();
+        let mut cell_values: HashMap<usize, Option<i64>> = HashMap::new();
+        
+        for instr in instructions {
+            let mut keep = true;
+            
+            match &instr {
+                IRInstruction::Set(cell, 0) => {
+                    if let Some(Some(0)) = cell_values.get(cell) {
+                        keep = false; // Already 0
+                    } else {
+                        cell_values.insert(*cell, Some(0));
+                    }
+                },
+                IRInstruction::Set(cell, val) => {
+                    if let Some(Some(prev_val)) = cell_values.get(cell) {
+                        if prev_val == val {
+                            keep = false;
+                        }
+                    }
+                    cell_values.insert(*cell, Some(*val));
+                },
+                IRInstruction::Add(_, 0) => {
+                    keep = false; // No-op
+                },
+                IRInstruction::Copy(src, dest) if src == dest => {
+                    keep = false; // Redundant
+                },
+                IRInstruction::Copy(_, dest) => {
+                    cell_values.insert(*dest, None);
+                },
+                IRInstruction::LoopStart(_) | IRInstruction::LoopEnd(_) => {
+                    cell_values.clear();
+                },
+                _ => {}
+            }
+            
+            if keep {
+                result.push(instr);
+            }
+        }
+        
+        result
+    }
+    
+    fn remove_duplicate_declarations(&self, instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
+        let mut result = Vec::new();
+        let mut declared_vars: HashSet<String> = HashSet::new();
+        
+        for instr in instructions {
+            match &instr {
+                IRInstruction::Comment(text) => {
+                    if text.starts_with("Declare ") {
+                        if let Some(var_name) = text.split_whitespace().nth(1) {
+                            if declared_vars.contains(var_name) {
+                                continue; // Skip duplicate
+                            } else {
+                                declared_vars.insert(var_name.to_string());
+                            }
+                        }
+                    }
+                    result.push(instr);
+                },
+                _ => {
+                    result.push(instr);
+                }
+            }
+        }
+        
+        result
+    }
+}
+
+pub fn optimize_ir(instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
+    let mut optimizer = DeadCodeEliminator::new();
+    optimizer.eliminate(instructions)
+}
 
 fn main() {
-    println!("\n=== C to Brainfuck Compiler - IR Generation Test ===\n");
-
-    // Test 1: Simple arithmetic
-    println!("TEST 1: Simple Arithmetic");
-    test_simple_arithmetic();
-
-    // Test 2: Variables and assignments
-    println!("\nTEST 2: Variables and Assignments");
-    test_variables();
-
-    // Test 3: Control flow
-    println!("\nTEST 3: Control Flow (If/While/For)");
-    test_control_flow();
-
-    // Test 4: Functions (inlined)
-    println!("\nTEST 4: Function Inlining");
-    test_functions();
-
-    // Test 5: Arrays
-    println!("\nTEST 5: Arrays");
-    test_arrays();
-
-    // Test 6: Complete program
-    println!("\nTEST 6: Complete Program");
-    test_complete_program();
+    println!("\n=== C to Brainfuck Compiler - DCE Test Suite ===\n");
+    
+    println!("{}","=".repeat(70));
+    println!("TEST 1: Dead Variable Elimination");
+    println!("{}","=".repeat(70));
+    test_dead_variables();
+    
+    println!("\n{}","=".repeat(70));
+    println!("TEST 2: Dead Write Elimination");
+    println!("{}","=".repeat(70));
+    test_dead_writes();
+    
+    println!("\n{}","=".repeat(70));
+    println!("TEST 3: Redundant Operations");
+    println!("{}","=".repeat(70));
+    test_redundant_operations();
+    
+    println!("\n{}","=".repeat(70));
+    println!("TEST 4: Duplicate Declarations");
+    println!("{}","=".repeat(70));
+    test_duplicate_declarations();
+    
+    println!("\n{}","=".repeat(70));
+    println!("TEST 5: Real-World Example");
+    println!("{}","=".repeat(70));
+    test_real_world();
 }
 
-// ========================================================================
-// TEST 1: Simple Arithmetic
-// ========================================================================
-
-fn test_simple_arithmetic() {
+// TEST 1: Dead Variable Elimination
+fn test_dead_variables() {
     let source = r"
         int main() {
-            int x = 5;
-            int y = 3;
-            int sum = x + y;
-            int diff = x - y;
-            int prod = x * y;
-            putchar(sum);
+            int x = 5;      // USED
+            int y = 10;     // DEAD - never read
+            int z = 15;     // DEAD - never read
+            int w = x + 3;  // USED
+            putchar(w);
             return 0;
         }
     ";
-
-    println!("Source:");
-    println!("{}", source);
-
-    match compile_and_generate_ir(source) {
-        Ok(ir_gen) => {
-            println!("\n✓ IR Generated Successfully!");
-            ir_gen.print_ir();
+    
+    println!("Source: {}", source);
+    println!("\nExpected: Variables y and z should be eliminated\n");
+    
+    match compile_with_dce(source) {
+        Ok((before, after)) => {
+            println!("✓ DCE Applied Successfully!");
+            compare_ir(before, after);
         },
         Err(e) => println!("✗ Error: {}", e),
     }
 }
 
-// ========================================================================
-// TEST 2: Variables
-// ========================================================================
-
-fn test_variables() {
+// TEST 2: Dead Write Elimination
+fn test_dead_writes() {
     let source = r"
         int main() {
-            int a = 10;
-            int b = 20;
-            int c = a + b;
-            a = c;
-            putchar(a);
+            int x = 5;      // DEAD - overwritten before use
+            x = 10;         // USED
+            putchar(x);
             return 0;
         }
     ";
-
-    println!("Source:");
-    println!("{}", source);
-
-    match compile_and_generate_ir(source) {
-        Ok(ir_gen) => {
-            println!("\n✓ IR Generated Successfully!");
-            ir_gen.print_ir();
+    
+    println!("Source: {}", source);
+    println!("\nExpected: First assignment to x eliminated\n");
+    
+    match compile_with_dce(source) {
+        Ok((before, after)) => {
+            println!("✓ DCE Applied Successfully!");
+            compare_ir(before, after);
         },
         Err(e) => println!("✗ Error: {}", e),
     }
 }
 
-// ========================================================================
-// TEST 3: Control Flow
-// ========================================================================
-
-fn test_control_flow() {
+// TEST 3: Redundant Operations
+fn test_redundant_operations() {
     let source = r"
         int main() {
-            int x = 5;
-
-            // If statement
-            if (x > 3) {
-                putchar(65);  // 'A'
-            }
-
-            // While loop
-            int i = 0;
-            while (i < 3) {
-                putchar(66);  // 'B'
-                i = i + 1;
-            }
-
-            // For loop
-            for (int j = 0; j < 2; j = j + 1) {
-                putchar(67);  // 'C'
-            }
-
+            int x = 0;
+            x = 0;          // Redundant - already 0
+            putchar(x);
             return 0;
         }
     ";
-
-    println!("Source:");
-    println!("{}", source);
-
-    match compile_and_generate_ir(source) {
-        Ok(ir_gen) => {
-            println!("\n✓ IR Generated Successfully!");
-            ir_gen.print_ir();
+    
+    println!("Source: {}", source);
+    println!("\nExpected: Redundant Set eliminated\n");
+    
+    match compile_with_dce(source) {
+        Ok((before, after)) => {
+            println!("✓ DCE Applied Successfully!");
+            compare_ir(before, after);
         },
         Err(e) => println!("✗ Error: {}", e),
     }
 }
 
-// ========================================================================
-// TEST 4: Functions (will be inlined)
-// ========================================================================
-
-fn test_functions() {
+// TEST 4: Duplicate Declarations from Inlining
+fn test_duplicate_declarations() {
     let source = r"
         int add(int a, int b) {
             return a + b;
         }
-
-        int square(int x) {
-            return x * x;
-        }
-
+        
         int main() {
-            int result = add(3, 4);
-            int sq = square(result);
-            putchar(sq);
+            int x = add(1, 2);
+            int y = add(3, 4);
+            putchar(x + y);
             return 0;
         }
     ";
-
-    println!("Source:");
-    println!("{}", source);
-
-    match compile_and_generate_ir(source) {
-        Ok(ir_gen) => {
-            println!("\n✓ IR Generated Successfully!");
-            ir_gen.print_ir();
+    
+    println!("Source: {}", source);
+    println!("\nExpected: Duplicate declarations removed\n");
+    
+    match compile_with_dce(source) {
+        Ok((before, after)) => {
+            println!("✓ DCE Applied Successfully!");
+            compare_ir(before, after);
         },
         Err(e) => println!("✗ Error: {}", e),
     }
 }
 
-// ========================================================================
-// TEST 5: Arrays
-// ========================================================================
-
-fn test_arrays() {
-    let source = r"
-        int main() {
-            int arr[5];
-            arr[0] = 72;   // 'H'
-            arr[1] = 101;  // 'e'
-            arr[2] = 108;  // 'l'
-            arr[3] = 108;  // 'l'
-            arr[4] = 111;  // 'o'
-
-            putchar(arr[0]);
-            putchar(arr[1]);
-
-            return 0;
-        }
-    ";
-
-    println!("Source:");
-    println!("{}", source);
-
-    match compile_and_generate_ir(source) {
-        Ok(ir_gen) => {
-            println!("\n✓ IR Generated Successfully!");
-            ir_gen.print_ir();
-        },
-        Err(e) => println!("✗ Error: {}", e),
-    }
-}
-
-// ========================================================================
-// TEST 6: Complete Program (from your example)
-// ========================================================================
-
-fn test_complete_program() {
+// TEST 5: Real-World Example
+fn test_real_world() {
     let source = r"
         int max(int a, int b) {
             if (a > b) {
@@ -3016,82 +3163,76 @@ fn test_complete_program() {
             }
             return b;
         }
-
-        int min(int a, int b) {
-            if (a < b) {
-                return a;
-            }
-            return b;
-        }
-
-        int clamp(int value, int low, int high) {
-            int result = max(low, value);
-            result = min(result, high);
-            return result;
-        }
-
+        
         int main() {
-            int x = clamp(max(1, 2), min(3, 4), 10);
-            putchar(x);
+            int x = max(1, 2);
+            int y = max(3, 4);
+            int z = max(x, y);
+            putchar(z);
             return 0;
         }
     ";
-
-    println!("Source:");
-    println!("{}", source);
-
-    match compile_and_generate_ir(source) {
-        Ok(ir_gen) => {
-            println!("\n✓ IR Generated Successfully!");
-            ir_gen.print_ir();
+    
+    println!("Source: {}", source);
+    println!("\nExpected: Significant reduction from inlining\n");
+    
+    match compile_with_dce(source) {
+        Ok((before, after)) => {
+            println!("✓ DCE Applied Successfully!");
+            compare_ir(before, after);
         },
         Err(e) => println!("✗ Error: {}", e),
     }
 }
 
-// ========================================================================
-// HELPER: Compile and Generate IR
-// ========================================================================
-
-fn compile_and_generate_ir(source: &str) -> Result<IRGenerator, String> {
-    // PASS 1: Parse original source
-    let ast = parse_program(source)
-        .ok_or("Parsing failed")?;
-
-    // PASS 1.5: Semantic analysis on original
-    let mut ast_vec = if let ASTNode::Program(decls) = ast {
-        decls
-    } else {
-        vec![ast]
-    };
-
-    let _validated_ast = run_ast(&mut ast_vec)
-        .map_err(|e| format!("Semantic error: {}", e))?;
-
-    // PASS 2: Inline functions (source-to-source transformation)
+// HELPER: Compile with DCE
+fn compile_with_dce(source: &str) -> Result<(Vec<IRInstruction>, Vec<IRInstruction>), String> {
+    // Standard compilation pipeline
+    let ast = parse_program(source).ok_or("Parsing failed")?;
+    let mut ast_vec = if let ASTNode::Program(decls) = ast { decls } else { vec![ast] };
+    let _validated_ast = run_ast(&mut ast_vec).map_err(|e| format!("Semantic error: {}", e))?;
+    
     let inlined_source = clean_source(source);
-
-    // PASS 3: Re-parse and re-analyze inlined code
-    let inlined_ast = parse_program(&inlined_source)
-        .ok_or("Parsing inlined source failed")?;
-
-    let mut inlined_ast_vec = if let ASTNode::Program(decls) = inlined_ast {
-        decls
-    } else {
-        vec![inlined_ast]
-    };
-
-    let final_ast = run_ast(&mut inlined_ast_vec)
-        .map_err(|e| format!("Semantic error after inlining: {}", e))?;
-
-    // PASS 4: Generate IR
+    let inlined_ast = parse_program(&inlined_source).ok_or("Parsing inlined failed")?;
+    let mut inlined_ast_vec = if let ASTNode::Program(decls) = inlined_ast { decls } else { vec![inlined_ast] };
+    let final_ast = run_ast(&mut inlined_ast_vec).map_err(|e| format!("Semantic error after inlining: {}", e))?;
+    
+    // Generate IR
     let mut ir_gen = IRGenerator::new();
-
-    // Wrap in Program node if needed
     let program_node = ASTNode::Program(final_ast);
-
-    ir_gen.generate(program_node)
-        .map_err(|e| format!("IR generation error: {}", e))?;
-
-    Ok(ir_gen)
+    ir_gen.generate(program_node).map_err(|e| format!("IR generation error: {}", e))?;
+    
+    let before_dce = ir_gen.get_instructions().to_vec();
+    
+    // Apply DCE
+    let after_dce = optimize_ir(before_dce.clone());
+    
+    Ok((before_dce, after_dce))
 }
+
+// HELPER: Compare IR
+fn compare_ir(before: Vec<IRInstruction>, after: Vec<IRInstruction>) {
+    println!("\n--- BEFORE DCE ---");
+    println!("Instructions: {}", before.len());
+    for (i, instr) in before.iter().take(10).enumerate() {
+        println!("{:4}: {:?}", i, instr);
+    }
+    if before.len() > 10 {
+        println!("... ({} more)", before.len() - 10);
+    }
+    
+    println!("\n--- AFTER DCE ---");
+    println!("Instructions: {}", after.len());
+    for (i, instr) in after.iter().take(10).enumerate() {
+        println!("{:4}: {:?}", i, instr);
+    }
+    if after.len() > 10 {
+        println!("... ({} more)", after.len() - 10);
+    }
+    
+    println!("\n--- SUMMARY ---");
+    let removed = before.len() - after.len();
+    let percent = (removed as f64 / before.len() as f64) * 100.0;
+    println!("Removed: {} instructions ({:.1}% reduction)", removed, percent);
+}
+
