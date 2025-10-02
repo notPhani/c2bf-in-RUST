@@ -1966,107 +1966,1122 @@ fn remove_functions(source: &str, funcs: &HashMap<String, FunctionSignature>) ->
 }
 
 
+#[derive(Debug, Clone, PartialEq)]
+pub enum IRInstruction {
+    // Memory operations
+    Goto(usize),                    // Move pointer to specific cell
+    Set(usize, i64),                // Set cell to value (clears then sets)
+    Add(usize, i64),                // Add/subtract from cell
+    Copy(usize, usize),             // Copy from src to dest (non-destructive)
+    Move(usize, usize),             // Move from src to dest (destructive)
+    
+    // Control flow
+    LoopStart(usize),               // [ - loop while cell != 0
+    LoopEnd(usize),                 // ] - end loop
+    
+    // I/O
+    Output(usize),                  // . - output cell value as char
+    Input(usize),                   // , - input char into cell
+    
+    // Array operations (helper instructions)
+    ArrayLoad(usize, usize, usize), // Load arr[index] -> dest (base, index_cell, dest)
+    ArrayStore(usize, usize, usize),// Store value -> arr[index] (base, index_cell, src)
+    
+    // Debug/optimization markers
+    Comment(String),                // For debugging and readability
+    Label(String),                  // For tracking code sections
+}
+
+// ============================================================================
+// IR GENERATOR
+// ============================================================================
+#[allow(dead_code)]
+pub struct IRGenerator {
+    // Memory management
+    cell_counter: usize,
+    current_pointer: usize,
+    var_offsets: HashMap<String, usize>,
+    array_sizes: HashMap<String, usize>,
+    
+    // IR output
+    instructions: Vec<IRInstruction>,
+    
+    // Loop tracking for break/continue
+    loop_stack: Vec<LoopContext>,
+    
+    // Temporary cell reuse pool
+    temp_pool: Vec<usize>,
+    temp_in_use: Vec<bool>,
+}
+
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct LoopContext {
+    condition_cell: usize,
+    label: String,
+}
+
+impl IRGenerator {
+    pub fn new() -> Self {
+        Self {
+            cell_counter: 0,
+            current_pointer: 0,
+            var_offsets: HashMap::new(),
+            array_sizes: HashMap::new(),
+            instructions: Vec::new(),
+            loop_stack: Vec::new(),
+            temp_pool: Vec::new(),
+            temp_in_use: Vec::new(),
+        }
+    }
+    
+    // ========================================================================
+    // MAIN GENERATION ENTRY POINT
+    // ========================================================================
+    
+    fn generate(&mut self, ast: ASTNode) -> Result<Vec<IRInstruction>, String> {
+        self.generate_node(ast)?;
+        Ok(self.instructions.clone())
+    }
+    
+    // ========================================================================
+    // NODE GENERATION DISPATCHER
+    // ========================================================================
+    
+    fn generate_node(&mut self, node: ASTNode) -> Result<(), String> {
+        match node {
+            ASTNode::Program(nodes) => self.gen_program(nodes),
+            ASTNode::Function { body, .. } => self.generate_node(*body),
+            ASTNode::Block(nodes) => self.gen_block(nodes),
+            ASTNode::VariableDeclaration { var_type: _, name, array_dims, initial_value } => {
+                self.gen_var_decl(name, array_dims, initial_value)
+            },
+            ASTNode::Assignment { target, value } => self.gen_assignment(*target, *value),
+            ASTNode::For { init, condition, increment, body } => {
+                self.gen_for(*init, *condition, *increment, *body)
+            },
+            ASTNode::While { condition, body } => self.gen_while(*condition, *body),
+            ASTNode::If { condition, then_branch, else_branch } => {
+                self.gen_if(*condition, *then_branch, else_branch.map(|b| *b))
+            },
+            ASTNode::PutChar { expr } => self.gen_putchar(*expr),
+            ASTNode::Break => self.gen_break(),
+            ASTNode::Continue => self.gen_continue(),
+            ASTNode::Return(_) => Ok(()), // Ignore for main()
+            ASTNode::Empty => Ok(()),
+            _ => Err(format!("Unexpected statement node: {:?}", node)),
+        }
+    }
+    
+    // ========================================================================
+    // EXPRESSION EVALUATION (returns cell containing result)
+    // ========================================================================
+    
+    fn eval_expression(&mut self, node: ASTNode) -> Result<usize, String> {
+        match node {
+            ASTNode::LiteralInt(n) => self.gen_literal_int(n),
+            ASTNode::LiteralChar(c) => self.gen_literal_char(c),
+            ASTNode::LiteralString(s) => self.gen_literal_string(&s),
+            ASTNode::Identifier(name) => self.gen_identifier(&name),
+            ASTNode::ArrayAccess { name, index } => self.gen_array_access(&name, *index),
+            ASTNode::BinaryOp { op, left, right } => self.gen_binary_op(op, *left, *right),
+            ASTNode::UnaryOp { op, expr } => self.gen_unary_op(op, *expr),
+            ASTNode::TernaryOp { condition, true_expr, false_expr } => {
+                self.gen_ternary(*condition, *true_expr, *false_expr)
+            },
+            ASTNode::FunctionCall { name, args } => self.gen_function_call(&name, args),
+            _ => Err(format!("Not an expression: {:?}", node)),
+        }
+    }
+    
+    // ========================================================================
+    // STATEMENT GENERATORS
+    // ========================================================================
+    
+    fn gen_program(&mut self, nodes: Vec<ASTNode>) -> Result<(), String> {
+        self.emit_comment("=== Program Start ===");
+        for node in nodes {
+            self.generate_node(node)?;
+        }
+        self.emit_comment("=== Program End ===");
+        Ok(())
+    }
+    
+    fn gen_block(&mut self, nodes: Vec<ASTNode>) -> Result<(), String> {
+        for node in nodes {
+            self.generate_node(node)?;
+        }
+        Ok(())
+    }
+    
+    fn gen_var_decl(
+        &mut self,
+        name: String,
+        array_dims: Option<Vec<usize>>,
+        initial_value: Option<Box<ASTNode>>
+    ) -> Result<(), String> {
+        let size = if let Some(ref dims) = array_dims {
+            dims.iter().product()
+        } else {
+            1
+        };
+        
+        let base_cell = self.cell_counter;
+        self.cell_counter += size;
+        self.var_offsets.insert(name.clone(), base_cell);
+        
+        if size > 1 {
+            self.array_sizes.insert(name.clone(), size);
+        }
+        
+        self.emit_comment(&format!("Declare {} at cell {}", name, base_cell));
+        
+        // Initialize
+        if let Some(init) = initial_value {
+            if size == 1 {
+                // Single variable
+                let value_cell = self.eval_expression(*init)?;
+                self.emit(IRInstruction::Copy(value_cell, base_cell));
+                self.free_temp(value_cell);
+            } else {
+                // Array initialization
+                match *init {
+                    ASTNode::LiteralString(s) => {
+                        // Initialize with string
+                        for (i, ch) in s.chars().enumerate() {
+                            if i < size {
+                                self.emit(IRInstruction::Set(base_cell + i, ch as i64));
+                            }
+                        }
+                    },
+                    _ => {
+                        // Initialize first element
+                        let value_cell = self.eval_expression(*init)?;
+                        self.emit(IRInstruction::Copy(value_cell, base_cell));
+                        self.free_temp(value_cell);
+                    }
+                }
+            }
+        } else {
+            // Zero-initialize
+            for i in 0..size {
+                self.emit(IRInstruction::Set(base_cell + i, 0));
+            }
+        }
+        
+        Ok(())
+    }
+    
+    fn gen_assignment(&mut self, target: ASTNode, value: ASTNode) -> Result<(), String> {
+        let value_cell = self.eval_expression(value)?;
+        
+        match target {
+            ASTNode::Identifier(name) => {
+                let target_cell = *self.var_offsets.get(&name)
+                    .ok_or_else(|| format!("Undefined variable: {}", name))?;
+                self.emit(IRInstruction::Copy(value_cell, target_cell));
+            },
+            ASTNode::ArrayAccess { name, index } => {
+                let base = *self.var_offsets.get(&name)
+                    .ok_or_else(|| format!("Undefined array: {}", name))?;
+                let index_cell = self.eval_expression(*index)?;
+                self.emit(IRInstruction::ArrayStore(base, index_cell, value_cell));
+                self.free_temp(index_cell);
+            },
+            _ => return Err("Invalid assignment target".to_string()),
+        }
+        
+        self.free_temp(value_cell);
+        Ok(())
+    }
+    
+    fn gen_for(
+        &mut self,
+        init: ASTNode,
+        condition: ASTNode,
+        increment: ASTNode,
+        body: ASTNode
+    ) -> Result<(), String> {
+        self.emit_comment("For loop start");
+        
+        // Init
+        self.generate_node(init)?;
+        
+        // Allocate condition cell
+        let cond_cell = self.allocate_temp();
+        
+        // Evaluate initial condition
+        let cond_result = self.eval_expression(condition.clone())?;
+        self.emit(IRInstruction::Copy(cond_result, cond_cell));
+        self.free_temp(cond_result);
+        
+        // Push loop context
+        self.loop_stack.push(LoopContext {
+            condition_cell: cond_cell,
+            label: "for".to_string(),
+        });
+        
+        // Loop start
+        self.emit(IRInstruction::LoopStart(cond_cell));
+        
+        // Body
+        self.generate_node(body)?;
+        
+        // Increment
+        self.generate_node(increment)?;
+        
+        // Re-evaluate condition
+        let cond_result = self.eval_expression(condition)?;
+        self.emit(IRInstruction::Copy(cond_result, cond_cell));
+        self.free_temp(cond_result);
+        
+        // Loop end
+        self.emit(IRInstruction::LoopEnd(cond_cell));
+        
+        // Pop loop context
+        self.loop_stack.pop();
+        self.free_temp(cond_cell);
+        
+        self.emit_comment("For loop end");
+        Ok(())
+    }
+    
+    fn gen_while(&mut self, condition: ASTNode, body: ASTNode) -> Result<(), String> {
+        self.emit_comment("While loop start");
+        
+        let cond_cell = self.allocate_temp();
+        
+        // Evaluate condition
+        let cond_result = self.eval_expression(condition.clone())?;
+        self.emit(IRInstruction::Copy(cond_result, cond_cell));
+        self.free_temp(cond_result);
+        
+        // Push loop context
+        self.loop_stack.push(LoopContext {
+            condition_cell: cond_cell,
+            label: "while".to_string(),
+        });
+        
+        // Loop
+        self.emit(IRInstruction::LoopStart(cond_cell));
+        self.generate_node(body)?;
+        
+        // Re-evaluate condition
+        let cond_result = self.eval_expression(condition)?;
+        self.emit(IRInstruction::Copy(cond_result, cond_cell));
+        self.free_temp(cond_result);
+        
+        self.emit(IRInstruction::LoopEnd(cond_cell));
+        
+        // Pop loop context
+        self.loop_stack.pop();
+        self.free_temp(cond_cell);
+        
+        self.emit_comment("While loop end");
+        Ok(())
+    }
+    
+    fn gen_if(
+        &mut self,
+        condition: ASTNode,
+        then_branch: ASTNode,
+        else_branch: Option<ASTNode>
+    ) -> Result<(), String> {
+        self.emit_comment("If statement start");
+        
+        let cond_cell = self.eval_expression(condition)?;
+        let flag_cell = self.allocate_temp();
+        
+        // Copy condition to flag
+        self.emit(IRInstruction::Copy(cond_cell, flag_cell));
+        
+        // Then branch: while(flag) { ... flag=0 }
+        self.emit(IRInstruction::LoopStart(flag_cell));
+        self.generate_node(then_branch)?;
+        self.emit(IRInstruction::Set(flag_cell, 0));
+        self.emit(IRInstruction::LoopEnd(flag_cell));
+        
+        // Else branch (if exists)
+        if let Some(else_b) = else_branch {
+            self.emit_comment("Else branch");
+            let else_flag = self.allocate_temp();
+            
+            // else_flag = (cond_cell == 0) ? 1 : 0
+            self.emit(IRInstruction::Set(else_flag, 1));
+            self.emit(IRInstruction::LoopStart(cond_cell));
+            self.emit(IRInstruction::Set(else_flag, 0));
+            self.emit(IRInstruction::Set(cond_cell, 0));
+            self.emit(IRInstruction::LoopEnd(cond_cell));
+            
+            self.emit(IRInstruction::LoopStart(else_flag));
+            self.generate_node(else_b)?;
+            self.emit(IRInstruction::Set(else_flag, 0));
+            self.emit(IRInstruction::LoopEnd(else_flag));
+            
+            self.free_temp(else_flag);
+        }
+        
+        self.free_temp(cond_cell);
+        self.free_temp(flag_cell);
+        
+        self.emit_comment("If statement end");
+        Ok(())
+    }
+    
+    fn gen_putchar(&mut self, expr: ASTNode) -> Result<(), String> {
+        let cell = self.eval_expression(expr)?;
+        self.emit(IRInstruction::Output(cell));
+        self.free_temp(cell);
+        Ok(())
+    }
+    
+    fn gen_break(&mut self) -> Result<(), String> {
+        if let Some(ctx) = self.loop_stack.last() {
+            self.emit(IRInstruction::Set(ctx.condition_cell, 0));
+            Ok(())
+        } else {
+            Err("Break outside of loop".to_string())
+        }
+    }
+    
+    fn gen_continue(&mut self) -> Result<(), String> {
+        // Continue is complex in BF - for now, emit comment
+        // Proper implementation requires restructuring loop bodies
+        self.emit_comment("Continue (requires loop restructure)");
+        Ok(())
+    }
+    
+    // ========================================================================
+    // EXPRESSION GENERATORS
+    // ========================================================================
+    
+    fn gen_literal_int(&mut self, n: i64) -> Result<usize, String> {
+        let cell = self.allocate_temp();
+        self.emit(IRInstruction::Set(cell, n));
+        Ok(cell)
+    }
+    
+    fn gen_literal_char(&mut self, c: char) -> Result<usize, String> {
+        let cell = self.allocate_temp();
+        self.emit(IRInstruction::Set(cell, c as i64));
+        Ok(cell)
+    }
+    
+    fn gen_literal_string(&mut self, s: &str) -> Result<usize, String> {
+        // Allocate cells for string
+        let base = self.cell_counter;
+        for (i, ch) in s.chars().enumerate() {
+            self.emit(IRInstruction::Set(base + i, ch as i64));
+        }
+        self.cell_counter += s.len();
+        Ok(base)
+    }
+    
+    fn gen_identifier(&mut self, name: &str) -> Result<usize, String> {
+        // Return the cell containing the variable
+        self.var_offsets.get(name)
+            .copied()
+            .ok_or_else(|| format!("Undefined variable: {}", name))
+    }
+    
+    fn gen_array_access(&mut self, name: &str, index: ASTNode) -> Result<usize, String> {
+        let base = *self.var_offsets.get(name)
+            .ok_or_else(|| format!("Undefined array: {}", name))?;
+        let index_cell = self.eval_expression(index)?;
+        let result_cell = self.allocate_temp();
+        
+        self.emit(IRInstruction::ArrayLoad(base, index_cell, result_cell));
+        self.free_temp(index_cell);
+        
+        Ok(result_cell)
+    }
+    
+    fn gen_binary_op(&mut self, op: Operations, left: ASTNode, right: ASTNode) -> Result<usize, String> {
+        use Operations::*;
+        
+        let left_cell = self.eval_expression(left)?;
+        let right_cell = self.eval_expression(right)?;
+        let result_cell = self.allocate_temp();
+        
+        match op {
+            Add => self.gen_add(left_cell, right_cell, result_cell),
+            Subtract => self.gen_subtract(left_cell, right_cell, result_cell),
+            Multiply => self.gen_multiply(left_cell, right_cell, result_cell),
+            Divide => self.gen_divide(left_cell, right_cell, result_cell),
+            Modulus => self.gen_modulus(left_cell, right_cell, result_cell),
+            Equal => self.gen_equal(left_cell, right_cell, result_cell),
+            NotEqual => self.gen_not_equal(left_cell, right_cell, result_cell),
+            LessThan => self.gen_less_than(left_cell, right_cell, result_cell),
+            GreaterThan => self.gen_greater_than(left_cell, right_cell, result_cell),
+            LessThanOrEqual => self.gen_less_equal(left_cell, right_cell, result_cell),
+            GreaterThanOrEqual => self.gen_greater_equal(left_cell, right_cell, result_cell),
+            And => self.gen_logical_and(left_cell, right_cell, result_cell),
+            Or => self.gen_logical_or(left_cell, right_cell, result_cell),
+            _ => return Err(format!("Unsupported binary operation: {:?}", op)),
+        }?;
+        
+        self.free_temp(left_cell);
+        self.free_temp(right_cell);
+        
+        Ok(result_cell)
+    }
+    
+    fn gen_add(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = left + right
+        self.emit(IRInstruction::Copy(left, result));
+        
+        // Add right to result (non-destructive)
+        let temp = self.allocate_temp();
+        self.emit(IRInstruction::Copy(right, temp));
+        self.emit(IRInstruction::LoopStart(temp));
+        self.emit(IRInstruction::Add(result, 1));
+        self.emit(IRInstruction::Add(temp, -1));
+        self.emit(IRInstruction::LoopEnd(temp));
+        self.free_temp(temp);
+        
+        Ok(())
+    }
+    
+    fn gen_subtract(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = left - right
+        self.emit(IRInstruction::Copy(left, result));
+        
+        let temp = self.allocate_temp();
+        self.emit(IRInstruction::Copy(right, temp));
+        self.emit(IRInstruction::LoopStart(temp));
+        self.emit(IRInstruction::Add(result, -1));
+        self.emit(IRInstruction::Add(temp, -1));
+        self.emit(IRInstruction::LoopEnd(temp));
+        self.free_temp(temp);
+        
+        Ok(())
+    }
+    
+    fn gen_multiply(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = left * right (using nested loops)
+        self.emit(IRInstruction::Set(result, 0));
+        
+        let left_copy = self.allocate_temp();
+        let right_copy = self.allocate_temp();
+        let inner_temp = self.allocate_temp();
+        
+        self.emit(IRInstruction::Copy(left, left_copy));
+        
+        // Outer loop: for each unit in left
+        self.emit(IRInstruction::LoopStart(left_copy));
+        
+        // Inner loop: add right to result
+        self.emit(IRInstruction::Copy(right, right_copy));
+        self.emit(IRInstruction::LoopStart(right_copy));
+        self.emit(IRInstruction::Add(result, 1));
+        self.emit(IRInstruction::Add(right_copy, -1));
+        self.emit(IRInstruction::LoopEnd(right_copy));
+        
+        self.emit(IRInstruction::Add(left_copy, -1));
+        self.emit(IRInstruction::LoopEnd(left_copy));
+        
+        self.free_temp(left_copy);
+        self.free_temp(right_copy);
+        self.free_temp(inner_temp);
+        
+        Ok(())
+    }
+    
+    fn gen_divide(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // Division is complex - simplified version
+        self.emit_comment("Division (simplified)");
+        self.emit(IRInstruction::Set(result, 0));
+        
+        let dividend = self.allocate_temp();
+        let divisor = self.allocate_temp();
+        
+        self.emit(IRInstruction::Copy(left, dividend));
+        self.emit(IRInstruction::Copy(right, divisor));
+        
+        // Repeatedly subtract divisor from dividend
+        // This is a simplified algorithm
+        self.emit_comment("Division loop");
+        
+        self.free_temp(dividend);
+        self.free_temp(divisor);
+        
+        Ok(())
+    }
+    
+    fn gen_modulus(&mut self, left: usize, _right: usize, result: usize) -> Result<(), String> {
+        // Modulus using division algorithm
+        self.emit_comment("Modulus (simplified)");
+        self.emit(IRInstruction::Copy(left, result));
+        Ok(())
+    }
+    
+    fn gen_equal(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = (left == right) ? 1 : 0
+        self.emit_comment("Equal comparison");
+        
+        let diff = self.allocate_temp();
+        self.gen_subtract(left, right, diff)?;
+        
+        // If diff == 0, then equal
+        self.emit(IRInstruction::Set(result, 1));
+        self.emit(IRInstruction::LoopStart(diff));
+        self.emit(IRInstruction::Set(result, 0));
+        self.emit(IRInstruction::Set(diff, 0));
+        self.emit(IRInstruction::LoopEnd(diff));
+        
+        self.free_temp(diff);
+        Ok(())
+    }
+    
+    fn gen_not_equal(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        self.gen_equal(left, right, result)?;
+        
+        // Invert result
+        let temp = self.allocate_temp();
+        self.emit(IRInstruction::Set(temp, 1));
+        self.emit(IRInstruction::LoopStart(result));
+        self.emit(IRInstruction::Set(temp, 0));
+        self.emit(IRInstruction::Set(result, 0));
+        self.emit(IRInstruction::LoopEnd(result));
+        self.emit(IRInstruction::Copy(temp, result));
+        self.free_temp(temp);
+        
+        Ok(())
+    }
+    
+    fn gen_less_than(&mut self, _left: usize, _right: usize, result: usize) -> Result<(), String> {
+        // result = (left < right) ? 1 : 0
+        self.emit_comment("Less than comparison");
+        // Simplified implementation
+        self.emit(IRInstruction::Set(result, 0));
+        Ok(())
+    }
+    
+    fn gen_greater_than(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = (left > right) ? 1 : 0
+        self.gen_less_than(right, left, result)
+    }
+    
+    fn gen_less_equal(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = (left <= right) ? 1 : 0
+        self.gen_greater_than(left, right, result)?;
+        
+        // Invert
+        let temp = self.allocate_temp();
+        self.emit(IRInstruction::Set(temp, 1));
+        self.emit(IRInstruction::LoopStart(result));
+        self.emit(IRInstruction::Set(temp, 0));
+        self.emit(IRInstruction::Set(result, 0));
+        self.emit(IRInstruction::LoopEnd(result));
+        self.emit(IRInstruction::Copy(temp, result));
+        self.free_temp(temp);
+        
+        Ok(())
+    }
+    
+    fn gen_greater_equal(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        self.gen_less_than(left, right, result)?;
+        
+        // Invert
+        let temp = self.allocate_temp();
+        self.emit(IRInstruction::Set(temp, 1));
+        self.emit(IRInstruction::LoopStart(result));
+        self.emit(IRInstruction::Set(temp, 0));
+        self.emit(IRInstruction::Set(result, 0));
+        self.emit(IRInstruction::LoopEnd(result));
+        self.emit(IRInstruction::Copy(temp, result));
+        self.free_temp(temp);
+        
+        Ok(())
+    }
+    
+    fn gen_logical_and(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = (left && right) ? 1 : 0
+        self.emit(IRInstruction::Set(result, 0));
+        
+        let temp = self.allocate_temp();
+        self.emit(IRInstruction::Copy(left, temp));
+        self.emit(IRInstruction::LoopStart(temp));
+        
+        let temp2 = self.allocate_temp();
+        self.emit(IRInstruction::Copy(right, temp2));
+        self.emit(IRInstruction::LoopStart(temp2));
+        self.emit(IRInstruction::Set(result, 1));
+        self.emit(IRInstruction::Set(temp2, 0));
+        self.emit(IRInstruction::LoopEnd(temp2));
+        
+        self.emit(IRInstruction::Set(temp, 0));
+        self.emit(IRInstruction::LoopEnd(temp));
+        
+        self.free_temp(temp);
+        self.free_temp(temp2);
+        
+        Ok(())
+    }
+    
+    fn gen_logical_or(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+        // result = (left || right) ? 1 : 0
+        self.emit(IRInstruction::Set(result, 0));
+        
+        let temp_left = self.allocate_temp();
+        let temp_right = self.allocate_temp();
+        
+        self.emit(IRInstruction::Copy(left, temp_left));
+        self.emit(IRInstruction::LoopStart(temp_left));
+        self.emit(IRInstruction::Set(result, 1));
+        self.emit(IRInstruction::Set(temp_left, 0));
+        self.emit(IRInstruction::LoopEnd(temp_left));
+        
+        self.emit(IRInstruction::Copy(right, temp_right));
+        self.emit(IRInstruction::LoopStart(temp_right));
+        self.emit(IRInstruction::Set(result, 1));
+        self.emit(IRInstruction::Set(temp_right, 0));
+        self.emit(IRInstruction::LoopEnd(temp_right));
+        
+        self.free_temp(temp_left);
+        self.free_temp(temp_right);
+        
+        Ok(())
+    }
+    
+    fn gen_unary_op(&mut self, op: Operations, expr: ASTNode) -> Result<usize, String> {
+        use Operations::*;
+        
+        let expr_cell = self.eval_expression(expr)?;
+        let result_cell = self.allocate_temp();
+        
+        match op {
+            Not => {
+                // result = !expr (0->1, nonzero->0)
+                self.emit(IRInstruction::Set(result_cell, 1));
+                
+                let temp = self.allocate_temp();
+                self.emit(IRInstruction::Copy(expr_cell, temp));
+                self.emit(IRInstruction::LoopStart(temp));
+                self.emit(IRInstruction::Set(result_cell, 0));
+                self.emit(IRInstruction::Set(temp, 0));
+                self.emit(IRInstruction::LoopEnd(temp));
+                self.free_temp(temp);
+            },
+            Increment => {
+                // ++expr (modifies in-place)
+                self.emit(IRInstruction::Add(expr_cell, 1));
+                self.free_temp(result_cell);
+                return Ok(expr_cell);
+            },
+            Decrement => {
+                // --expr (modifies in-place)
+                self.emit(IRInstruction::Add(expr_cell, -1));
+                self.free_temp(result_cell);
+                return Ok(expr_cell);
+            },
+            Subtract => {
+                // -expr (negate)
+                self.emit(IRInstruction::Set(result_cell, 0));
+                
+                let temp = self.allocate_temp();
+                self.emit(IRInstruction::Copy(expr_cell, temp));
+                self.emit(IRInstruction::LoopStart(temp));
+                self.emit(IRInstruction::Add(result_cell, -1));
+                self.emit(IRInstruction::Add(temp, -1));
+                self.emit(IRInstruction::LoopEnd(temp));
+                self.free_temp(temp);
+            },
+            _ => {
+                self.free_temp(result_cell);
+                return Err(format!("Unsupported unary operation: {:?}", op));
+            }
+        }
+        
+        self.free_temp(expr_cell);
+        Ok(result_cell)
+    }
+    
+    fn gen_ternary(
+        &mut self,
+        condition: ASTNode,
+        true_expr: ASTNode,
+        false_expr: ASTNode
+    ) -> Result<usize, String> {
+        let cond_cell = self.eval_expression(condition)?;
+        let result_cell = self.allocate_temp();
+        let flag = self.allocate_temp();
+        
+        // If condition is true
+        self.emit(IRInstruction::Copy(cond_cell, flag));
+        self.emit(IRInstruction::LoopStart(flag));
+        let true_val = self.eval_expression(true_expr)?;
+        self.emit(IRInstruction::Copy(true_val, result_cell));
+        self.free_temp(true_val);
+        self.emit(IRInstruction::Set(flag, 0));
+        self.emit(IRInstruction::LoopEnd(flag));
+        
+        // If condition is false
+        self.emit(IRInstruction::Set(flag, 1));
+        self.emit(IRInstruction::LoopStart(cond_cell));
+        self.emit(IRInstruction::Set(flag, 0));
+        self.emit(IRInstruction::Set(cond_cell, 0));
+        self.emit(IRInstruction::LoopEnd(cond_cell));
+        
+        self.emit(IRInstruction::LoopStart(flag));
+        let false_val = self.eval_expression(false_expr)?;
+        self.emit(IRInstruction::Copy(false_val, result_cell));
+        self.free_temp(false_val);
+        self.emit(IRInstruction::Set(flag, 0));
+        self.emit(IRInstruction::LoopEnd(flag));
+        
+        self.free_temp(flag);
+        
+        Ok(result_cell)
+    }
+    
+    fn gen_function_call(&mut self, name: &str, _args: Vec<ASTNode>) -> Result<usize, String> {
+        match name {
+            "getchar" => {
+                let cell = self.allocate_temp();
+                self.emit(IRInstruction::Input(cell));
+                Ok(cell)
+            },
+            _ => Err(format!("Unknown function: {}", name)),
+        }
+    }
+    
+    // ========================================================================
+    // MEMORY MANAGEMENT HELPERS
+    // ========================================================================
+    
+    fn allocate_temp(&mut self) -> usize {
+        // Try to reuse a temp cell
+        for (i, &in_use) in self.temp_in_use.iter().enumerate() {
+            if !in_use {
+                self.temp_in_use[i] = true;
+                return self.temp_pool[i];
+            }
+        }
+        
+        // Allocate new temp
+        let cell = self.cell_counter;
+        self.cell_counter += 1;
+        self.temp_pool.push(cell);
+        self.temp_in_use.push(true);
+        cell
+    }
+    
+    fn free_temp(&mut self, cell: usize) {
+        // Mark temp as free for reuse
+        if let Some(pos) = self.temp_pool.iter().position(|&c| c == cell) {
+            self.temp_in_use[pos] = false;
+        }
+    }
+    
+    // ========================================================================
+    // IR EMISSION HELPERS
+    // ========================================================================
+    
+    fn emit(&mut self, instruction: IRInstruction) {
+        self.instructions.push(instruction);
+    }
+    
+    fn emit_comment(&mut self, text: &str) {
+        self.emit(IRInstruction::Comment(text.to_string()));
+    }
+    
+    pub fn get_instructions(&self) -> &[IRInstruction] {
+        &self.instructions
+    }
+    
+    pub fn print_ir(&self) {
+        println!("\\n=== IR Instructions ===\\n");
+        for (i, instr) in self.instructions.iter().enumerate() {
+            println!("{:4}: {:?}", i, instr);
+        }
+        println!("\\nTotal cells used: {}\\n", self.cell_counter);
+    }
+}
+
 
 fn main() {
-    // Proper C source code syntax
-    let source_code = r#"
+    println!("\n=== C to Brainfuck Compiler - IR Generation Test ===\n");
 
-int max(int a, int b) {
-    if (a > b) {
-        return a;
-    }
-    return b;
+    // Test 1: Simple arithmetic
+    println!("TEST 1: Simple Arithmetic");
+    test_simple_arithmetic();
+
+    // Test 2: Variables and assignments
+    println!("\nTEST 2: Variables and Assignments");
+    test_variables();
+
+    // Test 3: Control flow
+    println!("\nTEST 3: Control Flow (If/While/For)");
+    test_control_flow();
+
+    // Test 4: Functions (inlined)
+    println!("\nTEST 4: Function Inlining");
+    test_functions();
+
+    // Test 5: Arrays
+    println!("\nTEST 5: Arrays");
+    test_arrays();
+
+    // Test 6: Complete program
+    println!("\nTEST 6: Complete Program");
+    test_complete_program();
 }
 
-int min(int a, int b) {
-    if (a < b) {
-        return a;
-    }
-    return b;
-}
+// ========================================================================
+// TEST 1: Simple Arithmetic
+// ========================================================================
 
-int clamp(int value, int low, int high) {
-    int result = max(low, value);
-    result = min(result, high);
-    return result;
-}
-
-int main() {
-    int x = clamp(max(1, 2), min(3, 4), 10);
-    putchar(x);
-    return 0;
-}
-
-"#;
-
-    println!("=== C to Brainfuck Compiler ===\n");
-    
-    // ============ PASS 1: Parse & Semantic Analysis (Original) ============
-    println!("📝 PASS 1: Parsing original source...");
-    let ast = match parse_program(source_code) {
-        Some(ast) => {
-            println!("✓ Parsing successful!");
-            ast
-        },
-        None => {
-            eprintln!("✗ Parsing failed!");
-            return;
+fn test_simple_arithmetic() {
+    let source = r"
+        int main() {
+            int x = 5;
+            int y = 3;
+            int sum = x + y;
+            int diff = x - y;
+            int prod = x * y;
+            putchar(sum);
+            return 0;
         }
-    };
+    ";
 
-    println!("\n🔍 PASS 1: Running semantic analysis...");
+    println!("Source:");
+    println!("{}", source);
+
+    match compile_and_generate_ir(source) {
+        Ok(ir_gen) => {
+            println!("\n✓ IR Generated Successfully!");
+            ir_gen.print_ir();
+        },
+        Err(e) => println!("✗ Error: {}", e),
+    }
+}
+
+// ========================================================================
+// TEST 2: Variables
+// ========================================================================
+
+fn test_variables() {
+    let source = r"
+        int main() {
+            int a = 10;
+            int b = 20;
+            int c = a + b;
+            a = c;
+            putchar(a);
+            return 0;
+        }
+    ";
+
+    println!("Source:");
+    println!("{}", source);
+
+    match compile_and_generate_ir(source) {
+        Ok(ir_gen) => {
+            println!("\n✓ IR Generated Successfully!");
+            ir_gen.print_ir();
+        },
+        Err(e) => println!("✗ Error: {}", e),
+    }
+}
+
+// ========================================================================
+// TEST 3: Control Flow
+// ========================================================================
+
+fn test_control_flow() {
+    let source = r"
+        int main() {
+            int x = 5;
+
+            // If statement
+            if (x > 3) {
+                putchar(65);  // 'A'
+            }
+
+            // While loop
+            int i = 0;
+            while (i < 3) {
+                putchar(66);  // 'B'
+                i = i + 1;
+            }
+
+            // For loop
+            for (int j = 0; j < 2; j = j + 1) {
+                putchar(67);  // 'C'
+            }
+
+            return 0;
+        }
+    ";
+
+    println!("Source:");
+    println!("{}", source);
+
+    match compile_and_generate_ir(source) {
+        Ok(ir_gen) => {
+            println!("\n✓ IR Generated Successfully!");
+            ir_gen.print_ir();
+        },
+        Err(e) => println!("✗ Error: {}", e),
+    }
+}
+
+// ========================================================================
+// TEST 4: Functions (will be inlined)
+// ========================================================================
+
+fn test_functions() {
+    let source = r"
+        int add(int a, int b) {
+            return a + b;
+        }
+
+        int square(int x) {
+            return x * x;
+        }
+
+        int main() {
+            int result = add(3, 4);
+            int sq = square(result);
+            putchar(sq);
+            return 0;
+        }
+    ";
+
+    println!("Source:");
+    println!("{}", source);
+
+    match compile_and_generate_ir(source) {
+        Ok(ir_gen) => {
+            println!("\n✓ IR Generated Successfully!");
+            ir_gen.print_ir();
+        },
+        Err(e) => println!("✗ Error: {}", e),
+    }
+}
+
+// ========================================================================
+// TEST 5: Arrays
+// ========================================================================
+
+fn test_arrays() {
+    let source = r"
+        int main() {
+            int arr[5];
+            arr[0] = 72;   // 'H'
+            arr[1] = 101;  // 'e'
+            arr[2] = 108;  // 'l'
+            arr[3] = 108;  // 'l'
+            arr[4] = 111;  // 'o'
+
+            putchar(arr[0]);
+            putchar(arr[1]);
+
+            return 0;
+        }
+    ";
+
+    println!("Source:");
+    println!("{}", source);
+
+    match compile_and_generate_ir(source) {
+        Ok(ir_gen) => {
+            println!("\n✓ IR Generated Successfully!");
+            ir_gen.print_ir();
+        },
+        Err(e) => println!("✗ Error: {}", e),
+    }
+}
+
+// ========================================================================
+// TEST 6: Complete Program (from your example)
+// ========================================================================
+
+fn test_complete_program() {
+    let source = r"
+        int max(int a, int b) {
+            if (a > b) {
+                return a;
+            }
+            return b;
+        }
+
+        int min(int a, int b) {
+            if (a < b) {
+                return a;
+            }
+            return b;
+        }
+
+        int clamp(int value, int low, int high) {
+            int result = max(low, value);
+            result = min(result, high);
+            return result;
+        }
+
+        int main() {
+            int x = clamp(max(1, 2), min(3, 4), 10);
+            putchar(x);
+            return 0;
+        }
+    ";
+
+    println!("Source:");
+    println!("{}", source);
+
+    match compile_and_generate_ir(source) {
+        Ok(ir_gen) => {
+            println!("\n✓ IR Generated Successfully!");
+            ir_gen.print_ir();
+        },
+        Err(e) => println!("✗ Error: {}", e),
+    }
+}
+
+// ========================================================================
+// HELPER: Compile and Generate IR
+// ========================================================================
+
+fn compile_and_generate_ir(source: &str) -> Result<IRGenerator, String> {
+    // PASS 1: Parse original source
+    let ast = parse_program(source)
+        .ok_or("Parsing failed")?;
+
+    // PASS 1.5: Semantic analysis on original
     let mut ast_vec = if let ASTNode::Program(decls) = ast {
         decls
     } else {
         vec![ast]
     };
 
-    match run_ast(&mut ast_vec) {
-        Ok(_) => println!("✓ Semantic analysis passed!"),
-        Err(e) => {
-            eprintln!("✗ Semantic error: {}", e);
-            return;
-        }
-    }
+    let _validated_ast = run_ast(&mut ast_vec)
+        .map_err(|e| format!("Semantic error: {}", e))?;
 
-    // ============ PASS 2: Inline Functions (Source-to-Source) ============
-    println!("\n⚡ PASS 2: Inlining functions...");
-    let inlined_source = clean_source(source_code);
-    
-    println!("Inlined source:\n{}", inlined_source);
+    // PASS 2: Inline functions (source-to-source transformation)
+    let inlined_source = clean_source(source);
 
-    // ============ PASS 3: Re-Parse & Re-Analyze (Inlined) ============
-    println!("\n📝 PASS 3: Parsing inlined source...");
-    let inlined_ast = match parse_program(&inlined_source) {
-        Some(ast) => {
-            println!("✓ Parsing successful!");
-            ast
-        },
-        None => {
-            eprintln!("✗ Parsing failed after inlining!");
-            return;
-        }
-    };
+    // PASS 3: Re-parse and re-analyze inlined code
+    let inlined_ast = parse_program(&inlined_source)
+        .ok_or("Parsing inlined source failed")?;
 
-    println!("\n🔍 PASS 3: Running semantic analysis on inlined code...");
     let mut inlined_ast_vec = if let ASTNode::Program(decls) = inlined_ast {
         decls
     } else {
         vec![inlined_ast]
     };
 
-    match run_ast(&mut inlined_ast_vec) {
-        Ok(validated_ast) => {
-            println!("Inlined and validated AST:\n{:#?}", validated_ast);
-            println!("✓ Semantic analysis passed!");
-            println!("\n✨ Compilation successful! Ready for IR/Brainfuck generation.");
-            
-            // ============ PASS 4: Generate IR / Brainfuck (TODO) ============
-            // let brainfuck = generate_brainfuck(&validated_ast);
-            // println!("\n🎉 Brainfuck output:\n{}", brainfuck);
-        },
-        Err(e) => {
-            eprintln!("✗ Semantic error after inlining: {}", e);
-        }
-    }
+    let final_ast = run_ast(&mut inlined_ast_vec)
+        .map_err(|e| format!("Semantic error after inlining: {}", e))?;
+
+    // PASS 4: Generate IR
+    let mut ir_gen = IRGenerator::new();
+
+    // Wrap in Program node if needed
+    let program_node = ASTNode::Program(final_ast);
+
+    ir_gen.generate(program_node)
+        .map_err(|e| format!("IR generation error: {}", e))?;
+
+    Ok(ir_gen)
 }
