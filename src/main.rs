@@ -3333,8 +3333,8 @@ pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
 fn main() {
     let source = r"
     int main() {
-    putchar(72);   // H
-    putchar(105);  // i
+    int x = 65;
+    putchar(x);
     return 0;
 }
 
