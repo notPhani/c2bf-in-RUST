@@ -3318,6 +3318,7 @@ pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
     let mut ir_gen = IRGenerator::new();
     let program_node = ASTNode::Program(final_ast);
     ir_gen.generate(program_node)?;
+    ir_gen.print_ir();
     let ir = ir_gen.get_instructions().to_vec();
     
     // PASS 5: Dead Code Elimination
@@ -3332,13 +3333,26 @@ pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
 
 fn main() {
     let source = r"
-    int main() {
-    int x = 65;
-    putchar(x);
-    return 0;
+    int classify(int x) {
+    int result = -1;
+    if (x > 0) {
+        result = 1;   // positive
+    } else if (x < 0) {
+        result = -1;  // negative
+    } else {
+        result = 0;   // zero
+    }
+    return result;
 }
 
-        ";
+    int main() {
+        int result1 = classify(69); // Use a variable instead of hardcoded value
+        // Output the result as a character
+        putchar(result1); // Assuming output function prints the character corresponding to the integer value
+        return 0;
+    }
+
+    ";
     let brainfuck = compile_to_brainfuck(source).expect("Compilation failed");
     
     // Output
