@@ -2057,6 +2057,9 @@ impl IRGenerator {
                 self.gen_var_decl(name, array_dims, initial_value)
             },
             ASTNode::Assignment { target, value } => self.gen_assignment(*target, *value),
+            ASTNode::BinaryOp { op: Operations::Assign, left, right } => {
+    self.gen_assignment(*left, *right)
+},
             ASTNode::For { init, condition, increment, body } => {
                 self.gen_for(*init, *condition, *increment, *body)
             },
@@ -2084,7 +2087,14 @@ impl IRGenerator {
             ASTNode::LiteralString(s) => self.gen_literal_string(&s),
             ASTNode::Identifier(name) => self.gen_identifier(&name),
             ASTNode::ArrayAccess { name, index } => self.gen_array_access(&name, *index),
-            ASTNode::BinaryOp { op, left, right } => self.gen_binary_op(op, *left, *right),
+            ASTNode::BinaryOp { op, left, right } => {
+    // Guard: Assign is a statement, not an expression
+    if op == Operations::Assign {
+        return Err("Assignment is not an expression".to_string());
+    }
+    self.gen_binary_op(op, *left, *right)
+},
+
             ASTNode::UnaryOp { op, expr } => self.gen_unary_op(op, *expr),
             ASTNode::TernaryOp { condition, true_expr, false_expr } => {
                 self.gen_ternary(*condition, *true_expr, *false_expr)
