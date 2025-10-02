@@ -2559,18 +2559,49 @@ impl IRGenerator {
         Ok(())
     }
     
-    fn gen_less_than(&mut self, _left: usize, _right: usize, result: usize) -> Result<(), String> {
-        // result = (left < right) ? 1 : 0
-        self.emit_comment("Less than comparison");
-        // Simplified implementation
-        self.emit(IRInstruction::Set(result, 0));
-        Ok(())
-    }
+    fn gen_less_than(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
+    // result = (left < right) ? 1 : 0
+    let left_copy = self.allocate_temp();
+    let right_copy = self.allocate_temp();
+    let flag = self.allocate_temp();
+    
+    self.emit(IRInstruction::Copy(left, left_copy));
+    self.emit(IRInstruction::Copy(right, right_copy));
+    self.emit(IRInstruction::Set(result, 0));
+    self.emit(IRInstruction::Set(flag, 1));
+    
+    // Simultaneously decrement both until one reaches zero
+    self.emit(IRInstruction::LoopStart(right_copy));
+    self.emit(IRInstruction::LoopStart(left_copy));
+    self.emit(IRInstruction::Add(right_copy, -1));
+    self.emit(IRInstruction::Add(left_copy, -1));
+    self.emit(IRInstruction::Set(flag, 0));
+    self.emit(IRInstruction::LoopEnd(left_copy));
+    
+    // If right_copy still has value, left < right
+    self.emit(IRInstruction::LoopStart(flag));
+    self.emit(IRInstruction::Set(flag, 0));
+    self.emit(IRInstruction::LoopEnd(flag));
+    
+    self.emit(IRInstruction::LoopStart(right_copy));
+    self.emit(IRInstruction::Set(result, 1));
+    self.emit(IRInstruction::Set(right_copy, 0));
+    self.emit(IRInstruction::LoopEnd(right_copy));
+    
+    self.emit(IRInstruction::LoopEnd(right_copy));
+    
+    self.free_temp(left_copy);
+    self.free_temp(right_copy);
+    self.free_temp(flag);
+    Ok(())
+}
+
     
     fn gen_greater_than(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
-        // result = (left > right) ? 1 : 0
-        self.gen_less_than(right, left, result)
-    }
+    // left > right is equivalent to right < left
+    self.gen_less_than(right, left, result)
+}
+
     
     fn gen_less_equal(&mut self, left: usize, right: usize, result: usize) -> Result<(), String> {
         // result = (left <= right) ? 1 : 0
@@ -3027,212 +3058,289 @@ pub fn optimize_ir(instructions: Vec<IRInstruction>) -> Vec<IRInstruction> {
     optimizer.eliminate(instructions)
 }
 
-fn main() {
-    println!("\n=== C to Brainfuck Compiler - DCE Test Suite ===\n");
-    
-    println!("{}","=".repeat(70));
-    println!("TEST 1: Dead Variable Elimination");
-    println!("{}","=".repeat(70));
-    test_dead_variables();
-    
-    println!("\n{}","=".repeat(70));
-    println!("TEST 2: Dead Write Elimination");
-    println!("{}","=".repeat(70));
-    test_dead_writes();
-    
-    println!("\n{}","=".repeat(70));
-    println!("TEST 3: Redundant Operations");
-    println!("{}","=".repeat(70));
-    test_redundant_operations();
-    
-    println!("\n{}","=".repeat(70));
-    println!("TEST 4: Duplicate Declarations");
-    println!("{}","=".repeat(70));
-    test_duplicate_declarations();
-    
-    println!("\n{}","=".repeat(70));
-    println!("TEST 5: Real-World Example");
-    println!("{}","=".repeat(70));
-    test_real_world();
+// ============================================================================
+// BRAINFUCK CODE GENERATOR
+// ============================================================================
+
+pub struct BrainfuckGenerator {
+    current_pointer: usize,
+    output: String,
+    optimize: bool,
 }
 
-// TEST 1: Dead Variable Elimination
-fn test_dead_variables() {
-    let source = r"
-        int main() {
-            int x = 5;      // USED
-            int y = 10;     // DEAD - never read
-            int z = 15;     // DEAD - never read
-            int w = x + 3;  // USED
-            putchar(w);
-            return 0;
+impl BrainfuckGenerator {
+    pub fn new() -> Self {
+        Self {
+            current_pointer: 0,
+            output: String::new(),
+            optimize: true,
         }
-    ";
-    
-    println!("Source: {}", source);
-    println!("\nExpected: Variables y and z should be eliminated\n");
-    
-    match compile_with_dce(source) {
-        Ok((before, after)) => {
-            println!("✓ DCE Applied Successfully!");
-            compare_ir(before, after);
-        },
-        Err(e) => println!("✗ Error: {}", e),
     }
-}
-
-// TEST 2: Dead Write Elimination
-fn test_dead_writes() {
-    let source = r"
-        int main() {
-            int x = 5;      // DEAD - overwritten before use
-            x = 10;         // USED
-            putchar(x);
-            return 0;
-        }
-    ";
     
-    println!("Source: {}", source);
-    println!("\nExpected: First assignment to x eliminated\n");
-    
-    match compile_with_dce(source) {
-        Ok((before, after)) => {
-            println!("✓ DCE Applied Successfully!");
-            compare_ir(before, after);
-        },
-        Err(e) => println!("✗ Error: {}", e),
+    pub fn with_optimization(mut self, optimize: bool) -> Self {
+        self.optimize = optimize;
+        self
     }
-}
-
-// TEST 3: Redundant Operations
-fn test_redundant_operations() {
-    let source = r"
-        int main() {
-            int x = 0;
-            x = 0;          // Redundant - already 0
-            putchar(x);
-            return 0;
-        }
-    ";
     
-    println!("Source: {}", source);
-    println!("\nExpected: Redundant Set eliminated\n");
-    
-    match compile_with_dce(source) {
-        Ok((before, after)) => {
-            println!("✓ DCE Applied Successfully!");
-            compare_ir(before, after);
-        },
-        Err(e) => println!("✗ Error: {}", e),
-    }
-}
-
-// TEST 4: Duplicate Declarations from Inlining
-fn test_duplicate_declarations() {
-    let source = r"
-        int add(int a, int b) {
-            return a + b;
+    // MAIN ENTRY POINT
+    pub fn generate(&mut self, instructions: &[IRInstruction]) -> String {
+        println!("\n=== Brainfuck Code Generation ===");
+        println!("IR Instructions: {}", instructions.len());
+        
+        for instr in instructions {
+            self.generate_instruction(instr);
         }
         
-        int main() {
-            int x = add(1, 2);
-            int y = add(3, 4);
-            putchar(x + y);
-            return 0;
-        }
-    ";
-    
-    println!("Source: {}", source);
-    println!("\nExpected: Duplicate declarations removed\n");
-    
-    match compile_with_dce(source) {
-        Ok((before, after)) => {
-            println!("✓ DCE Applied Successfully!");
-            compare_ir(before, after);
-        },
-        Err(e) => println!("✗ Error: {}", e),
-    }
-}
-
-// TEST 5: Real-World Example
-fn test_real_world() {
-    let source = r"
-        int max(int a, int b) {
-            if (a > b) {
-                return a;
-            }
-            return b;
+        if self.optimize {
+            self.output = self.peephole_optimize(self.output.clone());
         }
         
-        int main() {
-            int x = max(1, 2);
-            int y = max(3, 4);
-            int z = max(x, y);
-            putchar(z);
-            return 0;
+        println!("Brainfuck code length: {} characters", self.output.len());
+        
+        self.output.clone()
+    }
+    
+    // INSTRUCTION DISPATCHER
+    fn generate_instruction(&mut self, instr: &IRInstruction) {
+        match instr {
+            IRInstruction::Goto(cell) => self.gen_goto(*cell),
+            IRInstruction::Set(cell, value) => self.gen_set(*cell, *value),
+            IRInstruction::Add(cell, value) => self.gen_add(*cell, *value),
+            IRInstruction::Copy(src, dest) => self.gen_copy(*src, *dest),
+            IRInstruction::Move(src, dest) => self.gen_move(*src, *dest),
+            IRInstruction::LoopStart(cell) => self.gen_loop_start(*cell),
+            IRInstruction::LoopEnd(cell) => self.gen_loop_end(*cell),
+            IRInstruction::Output(cell) => self.gen_output(*cell),
+            IRInstruction::Input(cell) => self.gen_input(*cell),
+            IRInstruction::ArrayLoad(base, index, dest) => {
+                self.gen_array_load(*base, *index, *dest)
+            },
+            IRInstruction::ArrayStore(base, index, src) => {
+                self.gen_array_store(*base, *index, *src)
+            },
+            IRInstruction::Comment(text) => self.gen_comment(text),
+            IRInstruction::Label(label) => self.gen_label(label),
         }
-    ";
+    }
     
-    println!("Source: {}", source);
-    println!("\nExpected: Significant reduction from inlining\n");
+    // BASIC OPERATIONS
+    fn gen_goto(&mut self, cell: usize) {
+        let distance = cell as isize - self.current_pointer as isize;
+        
+        if distance > 0 {
+            self.emit(&">".repeat(distance as usize));
+        } else if distance < 0 {
+            self.emit(&"<".repeat((-distance) as usize));
+        }
+        
+        self.current_pointer = cell;
+    }
     
-    match compile_with_dce(source) {
-        Ok((before, after)) => {
-            println!("✓ DCE Applied Successfully!");
-            compare_ir(before, after);
-        },
-        Err(e) => println!("✗ Error: {}", e),
+    fn gen_set(&mut self, cell: usize, value: i64) {
+        self.gen_goto(cell);
+        self.emit("[-]"); // Clear cell
+        
+        if value > 0 {
+            self.emit(&"+".repeat(value as usize));
+        } else if value < 0 {
+            self.emit(&"-".repeat((-value) as usize));
+        }
+    }
+    
+    fn gen_add(&mut self, cell: usize, value: i64) {
+        if value == 0 {
+            return;
+        }
+        
+        self.gen_goto(cell);
+        
+        if value > 0 {
+            self.emit(&"+".repeat(value as usize));
+        } else {
+            self.emit(&"-".repeat((-value) as usize));
+        }
+    }
+    
+    fn gen_copy(&mut self, src: usize, dest: usize) {
+        if src == dest {
+            return;
+        }
+        
+        // Non-destructive copy using temp cells
+        let temp1 = src.max(dest) + 1;
+        let _temp2 = temp1 + 1;
+        
+        // Clear temps and dest
+        self.gen_set(temp1, 0);
+        self.gen_set(dest, 0);
+        
+        // Copy src to temp1 and dest
+        self.gen_goto(src);
+        self.emit("[-");
+        self.gen_goto(temp1);
+        self.emit("+");
+        self.gen_goto(dest);
+        self.emit("+");
+        self.gen_goto(src);
+        self.emit("]");
+        
+        // Restore src from temp1
+        self.gen_goto(temp1);
+        self.emit("[-");
+        self.gen_goto(src);
+        self.emit("+");
+        self.gen_goto(temp1);
+        self.emit("]");
+    }
+    
+    fn gen_move(&mut self, src: usize, dest: usize) {
+        if src == dest {
+            return;
+        }
+        
+        self.gen_set(dest, 0);
+        self.gen_goto(src);
+        self.emit("[-");
+        self.gen_goto(dest);
+        self.emit("+");
+        self.gen_goto(src);
+        self.emit("]");
+    }
+    
+    fn gen_loop_start(&mut self, cell: usize) {
+        self.gen_goto(cell);
+        self.emit("[");
+    }
+    
+    fn gen_loop_end(&mut self, cell: usize) {
+        self.gen_goto(cell);
+        self.emit("]");
+    }
+    
+    fn gen_output(&mut self, cell: usize) {
+        self.gen_goto(cell);
+        self.emit(".");
+    }
+    
+    fn gen_input(&mut self, cell: usize) {
+        self.gen_goto(cell);
+        self.emit(",");
+    }
+    
+    // ARRAY OPERATIONS (Simplified)
+    fn gen_array_load(&mut self, base: usize, _index_cell: usize, dest: usize) {
+        // Simplified: for now, just copy base to dest
+        // Full implementation requires complex pointer arithmetic
+        self.gen_copy(base, dest);
+    }
+    
+    fn gen_array_store(&mut self, base: usize, _index_cell: usize, src: usize) {
+        // Simplified: copy src to base
+        self.gen_copy(src, base);
+    }
+    
+    // METADATA
+    fn gen_comment(&mut self, text: &str) {
+        // BF comments (ignored by interpreters)
+        self.emit(&format!("\n# {}\n", text));
+    }
+    
+    fn gen_label(&mut self, label: &str) {
+        self.emit(&format!("\n## {}\n", label));
+    }
+    
+    // PEEPHOLE OPTIMIZATION
+    fn peephole_optimize(&self, code: String) -> String {
+        let mut result = code;
+        let original_len = result.len();
+        
+        // Remove no-ops
+        result = result.replace("+-", "");
+        result = result.replace("-+", "");
+        result = result.replace("<>", "");
+        result = result.replace("><", "");
+        result = result.replace("[]", "");
+        
+        // Merge consecutive (simple version - can be enhanced)
+        // This is a placeholder - full optimization would use RLE
+        
+        let optimized_len = result.len();
+        println!("Optimized: {} -> {} chars", original_len, optimized_len);
+        
+        result
+    }
+    
+    fn emit(&mut self, code: &str) {
+        self.output.push_str(code);
+    }
+    
+    pub fn get_output(&self) -> &str {
+        &self.output
     }
 }
 
-// HELPER: Compile with DCE
-fn compile_with_dce(source: &str) -> Result<(Vec<IRInstruction>, Vec<IRInstruction>), String> {
-    // Standard compilation pipeline
+// PUBLIC API
+pub fn generate_brainfuck(instructions: Vec<IRInstruction>) -> Result<String, String> {
+    let mut generator = BrainfuckGenerator::new();
+    let code = generator.generate(&instructions);
+    Ok(code)
+}
+
+pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
+    // PASS 1: Parse
     let ast = parse_program(source).ok_or("Parsing failed")?;
-    let mut ast_vec = if let ASTNode::Program(decls) = ast { decls } else { vec![ast] };
-    let _validated_ast = run_ast(&mut ast_vec).map_err(|e| format!("Semantic error: {}", e))?;
     
+    let mut ast_vec = if let ASTNode::Program(decls) = ast {
+        decls
+    } else {
+        vec![ast]
+    };
+    
+    // PASS 2: Semantic Analysis - FIX HERE
+    let _validated_ast = run_ast(&mut ast_vec)
+        .map_err(|e| format!("{}", e))?;  // Convert SemanticError to String
+    
+    // PASS 3: Function Inlining (source-to-source)
     let inlined_source = clean_source(source);
-    let inlined_ast = parse_program(&inlined_source).ok_or("Parsing inlined failed")?;
-    let mut inlined_ast_vec = if let ASTNode::Program(decls) = inlined_ast { decls } else { vec![inlined_ast] };
-    let final_ast = run_ast(&mut inlined_ast_vec).map_err(|e| format!("Semantic error after inlining: {}", e))?;
+    let inlined_ast = parse_program(&inlined_source).ok_or("Parse inlined failed")?;
     
-    // Generate IR
+    let mut inlined_ast_vec = if let ASTNode::Program(decls) = inlined_ast {
+        decls
+    } else {
+        vec![inlined_ast]
+    };
+    
+    // FIX HERE TOO
+    let final_ast = run_ast(&mut inlined_ast_vec)
+        .map_err(|e| format!("{}", e))?;  // Convert SemanticError to String
+    
+    // PASS 4: Generate IR
     let mut ir_gen = IRGenerator::new();
     let program_node = ASTNode::Program(final_ast);
-    ir_gen.generate(program_node).map_err(|e| format!("IR generation error: {}", e))?;
+    ir_gen.generate(program_node)?;
+    let ir = ir_gen.get_instructions().to_vec();
     
-    let before_dce = ir_gen.get_instructions().to_vec();
+    // PASS 5: Dead Code Elimination
+    let optimized_ir = optimize_ir(ir);
     
-    // Apply DCE
-    let after_dce = optimize_ir(before_dce.clone());
+    // PASS 6: Generate Brainfuck
+    let brainfuck = generate_brainfuck(optimized_ir)?;
     
-    Ok((before_dce, after_dce))
+    Ok(brainfuck)
 }
 
-// HELPER: Compare IR
-fn compare_ir(before: Vec<IRInstruction>, after: Vec<IRInstruction>) {
-    println!("\n--- BEFORE DCE ---");
-    println!("Instructions: {}", before.len());
-    for (i, instr) in before.iter().take(10).enumerate() {
-        println!("{:4}: {:?}", i, instr);
-    }
-    if before.len() > 10 {
-        println!("... ({} more)", before.len() - 10);
-    }
-    
-    println!("\n--- AFTER DCE ---");
-    println!("Instructions: {}", after.len());
-    for (i, instr) in after.iter().take(10).enumerate() {
-        println!("{:4}: {:?}", i, instr);
-    }
-    if after.len() > 10 {
-        println!("... ({} more)", after.len() - 10);
-    }
-    
-    println!("\n--- SUMMARY ---");
-    let removed = before.len() - after.len();
-    let percent = (removed as f64 / before.len() as f64) * 100.0;
-    println!("Removed: {} instructions ({:.1}% reduction)", removed, percent);
+
+fn main() {
+    let source = r"
+    int main() {
+    putchar(72);   // H
+    putchar(105);  // i
+    return 0;
 }
 
+        ";
+    let brainfuck = compile_to_brainfuck(source).expect("Compilation failed");
+    
+    // Output
+    println!("\n=== BRAINFUCK CODE ===\n{}", brainfuck);
+}
