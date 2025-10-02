@@ -1,6 +1,5 @@
 use std::{collections::HashMap};
 
-
 #[derive(Debug, Clone, PartialEq)]
 enum Keywords { Int, Char, String, Arr, If, Else, For, While, PutChar, GetChar, Return, Function, Break, Continue }
 
@@ -123,7 +122,6 @@ enum ASTNode {
     Block(Vec<ASTNode>),
     Empty,
 }
-
 
 fn parse_literal(tokens: &mut Vec<Token>) -> Option<ASTNode> {
     if tokens.is_empty() {
@@ -1966,6 +1964,8 @@ fn remove_functions(source: &str, funcs: &HashMap<String, FunctionSignature>) ->
     
     result
 }
+
+
 
 fn main() {
     // Proper C source code syntax
