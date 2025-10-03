@@ -3333,25 +3333,19 @@ pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
 
 fn main() {
     let source = r"
-    int classify(int x) {
-    int result = -1;
-    if (x > 0) {
-        result = 1;   // positive
-    } else if (x < 0) {
-        result = -1;  // negative
-    } else {
-        result = 0;   // zero
-    }
-    return result;
-}
-
-    int main() {
-        int result1 = classify(69); // Use a variable instead of hardcoded value
-        // Output the result as a character
-        putchar(result1); // Assuming output function prints the character corresponding to the integer value
-        return 0;
-    }
-
+        int sum(){
+        int res = 0;
+        int i = 0;
+        while(i<5){
+            res = res+13;
+            i = i+1;
+        }
+        return res;
+        }
+        int main(){
+            int result = sum();
+            putchar(result);
+        }
     ";
     let brainfuck = compile_to_brainfuck(source).expect("Compilation failed");
     
