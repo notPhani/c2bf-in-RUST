@@ -3333,19 +3333,14 @@ pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
 
 fn main() {
     let source = r"
-        int sum(){
-        int res = 0;
-        int i = 0;
-        while(i<5){
-            res = res+13;
-            i = i+1;
-        }
-        return res;
-        }
         int main(){
-            int result = sum();
-            putchar(result);
-        }
+        int i =65;
+        while(i < 91){
+        putchar(i);
+        i = i +1;
+}
+        return 0;
+}
     ";
     let brainfuck = compile_to_brainfuck(source).expect("Compilation failed");
     
