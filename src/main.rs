@@ -1,3 +1,5 @@
+mod test;
+
 use std::{collections::HashMap};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -3328,6 +3330,441 @@ pub fn compile_to_brainfuck(source: &str) -> Result<String, String> {
     let brainfuck = generate_brainfuck(optimized_ir)?;
     
     Ok(brainfuck)
+}
+
+// tests/integration_tests.rs
+// Place this in your project's tests/ directory
+
+#[cfg(test)]
+mod compiler_tests {
+    use super::*; // Replace with your actual crate name
+    
+    #[test]
+    fn test_01_simple_literal_output() {
+        let source = r"
+        int main() {
+            putchar(65);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Compilation should succeed");
+        let bf_code = result.unwrap();
+        assert!(!bf_code.is_empty(), "Generated Brainfuck should not be empty");
+    }
+    
+    #[test]
+    fn test_02_function_call_with_inlining() {
+        let source = r"
+        int get_value() {
+            return 72;
+        }
+        
+        int main() {
+            putchar(get_value());
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Function inlining should work: {:?}", result.err());
+    }
+    
+    #[test]
+    fn test_03_variable_assignment() {
+        let source = r"
+        int main() {
+            int x = 88;
+            putchar(x);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Variable assignment should compile");
+    }
+    
+    #[test]
+    fn test_04_while_loop_counter() {
+        let source = r"
+        int main() {
+            int i = 0;
+            int sum = 65;
+            while (i < 3) {
+                i = i + 1;
+            }
+            putchar(sum);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "While loop should compile");
+    }
+    
+    #[test]
+    fn test_05_simple_addition() {
+        let source = r"
+        int main() {
+            int a = 30;
+            int b = 35;
+            int result = a + b;
+            putchar(result);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Addition should compile");
+    }
+    
+    #[test]
+    fn test_06_nested_function_calls() {
+        let source = r"
+        int double_it(int x) {
+            return 2*x;
+        }
+        
+        int add(int a, int b) {
+            return a + b;
+        }
+        
+        int main() {
+            int result = add(double_it(16), double_it(16));
+            putchar(result);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Nested function calls should compile");
+    }
+    
+    #[test]
+    fn test_07_if_else_true_branch() {
+        let source = r"
+        int main() {
+            int x = 10;
+            if (x > 5) {
+                putchar(89);
+            } else {
+                putchar(78);
+            }
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "If-else should compile");
+    }
+    
+    #[test]
+    fn test_08_subtraction_operation() {
+        let source = r"
+        int main() {
+            int a = 100;
+            int b = 23;
+            int result = a - b;
+            putchar(result);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Subtraction should compile");
+    }
+    
+    #[test]
+    fn test_09_multiple_parameters() {
+        let source = r"
+        int add_three(int x, int y, int z) {
+            return x + y + z;
+        }
+        
+        int main() {
+            int result = add_three(20, 25, 20);
+            putchar(result);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Multi-parameter functions should compile");
+    }
+    
+    #[test]
+    fn test_10_for_loop_iteration() {
+        let source = r"
+        int main() {
+            int sum = 0;
+            int i = 0;
+            while(i<6) {
+                sum = sum + 13;
+                i = i+1;
+            }
+            putchar(sum);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "For loop should compile");
+    }
+    
+    #[test]
+    fn test_11_char_type_usage() {
+        let source = r"
+        int main() {
+            char letter = 'Z';
+            putchar(letter);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Char type should compile");
+    }
+    
+    #[test]
+    fn test_12_if_else_false_branch() {
+        let source = r"
+        int main() {
+            int x = 3;
+            if (x > 10) {
+                putchar(78);
+            } else {
+                putchar(89);
+            }
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "If-else false branch should compile");
+    }
+    
+    #[test]
+    fn test_13_complex_arithmetic() {
+        let source = r"
+        int main() {
+            int result = 50 + 10 + 5;
+            putchar(result);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Complex arithmetic should compile");
+    }
+    
+    #[test]
+    fn test_14_less_than_comparison() {
+        let source = r"
+        int main() {
+            int a = 5;
+            int b = 10;
+            if (a < b) {
+                putchar(84);
+            } else {
+                putchar(70);
+            }
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Less than comparison should compile");
+    }
+    
+    #[test]
+    fn test_15_sequential_output() {
+        let source = r"
+        int main() {
+            putchar(72);
+            putchar(105);
+            putchar(33);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Sequential output should compile");
+    }
+    
+    #[test]
+    fn test_16_nested_code_blocks() {
+        let source = r"
+        int main() {
+            int x = 50;
+            {
+                int y = 15;
+                x = x + y;
+            }
+            putchar(x);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Nested blocks should compile");
+    }
+    
+    #[test]
+    fn test_18_greater_than_comparison() {
+        let source = r"
+        int main() {
+            int x = 100;
+            int y = 50;
+            if (x > y) {
+                putchar(89);
+            } else {
+                putchar(78);
+            }
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Greater than comparison should compile");
+    }
+    
+    #[test]
+    fn test_19_while_with_break() {
+        let source = r"
+        int main() {
+            int i = 0;
+            int sum = 0;
+            while (i < 10) {
+                sum = sum + 10;
+                i = i + 1;
+                if (i > 6) {
+                    break;
+                }
+            }
+            putchar(sum);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "While with break should compile");
+    }
+    
+    #[test]
+    fn test_20_unary_negation() {
+        let source = r"
+        int main() {
+            int x = -10;
+            int y = -x;
+            putchar(y);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Unary negation should compile");
+    }
+    
+    #[test]
+    fn test_21_equality_comparison() {
+        let source = r"
+        int main() {
+            int a = 42;
+            int b = 42;
+            if (a == b) {
+                putchar(69);
+            } else {
+                putchar(78);
+            }
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Equality comparison should compile");
+    }
+    
+    #[test]
+    fn test_22_variable_reassignment() {
+        let source = r"
+        int main() {
+            int x = 50;
+            x = x + 15;
+            putchar(x);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Variable reassignment should compile");
+    }
+    
+    #[test]
+    fn test_23_not_equal_comparison() {
+        let source = r"
+        int main() {
+            int a = 10;
+            int b = 20;
+            if (a != b) {
+                putchar(68);
+            } else {
+                putchar(83);
+            }
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Not equal comparison should compile");
+    }
+    
+    #[test]
+    fn test_24_complex_multi_parameter() {
+        let source = r"
+        int calc(int a, int b, int c) {
+            int temp = a + b;
+            return temp + c;
+        }
+        
+        int main() {
+            int result = calc(20, 20, 25);
+            putchar(result);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Complex multi-parameter should compile");
+    }
+    
+    #[test]
+    fn test_25_hello_world() {
+        let source = r"
+        int main() {
+            putchar(72);
+            putchar(101);
+            putchar(108);
+            putchar(108);
+            putchar(111);
+            putchar(32);
+            putchar(87);
+            putchar(111);
+            putchar(114);
+            putchar(108);
+            putchar(100);
+            putchar(33);
+            return 0;
+        }
+        ";
+        
+        let result = compile_to_brainfuck(source);
+        assert!(result.is_ok(), "Hello World should compile");
+        
+        // Optionally verify length
+        let bf_code = result.unwrap();
+        assert!(bf_code.len() > 100, "Hello World should generate substantial BF code");
+    }
 }
 
 
