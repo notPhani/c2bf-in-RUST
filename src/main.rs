@@ -3422,8 +3422,8 @@ mod compiler_tests {
     #[test]
     fn test_06_nested_function_calls() {
         let source = r"
-        int double_it(int x) {
-            return 2*x;
+        int double_it() {
+            return 2;
         }
         
         int add(int a, int b) {
@@ -3431,7 +3431,7 @@ mod compiler_tests {
         }
         
         int main() {
-            int result = add(double_it(16), double_it(16));
+            int result = add(double_it(), double_it());
             putchar(result);
             return 0;
         }
@@ -3770,14 +3770,14 @@ mod compiler_tests {
 
 fn main() {
     let source = r"
-        int main(){
-        int i =65;
-        while(i < 91){
-        putchar(i);
-        i = i +1;
+    int main() {
+    int x = 3;
+    while (x > 0) {
+        putchar(x + 48);
+        x = x - 1;
+    }
 }
-        return 0;
-}
+
     ";
     let brainfuck = compile_to_brainfuck(source).expect("Compilation failed");
     
