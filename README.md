@@ -1,4 +1,5 @@
 [![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+![CI](https://github.com/notPhani/c2bf-in-RUST/workflows/Rust%20CI/badge.svg)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 ![GitHub Stars](https://img.shields.io/github/stars/notPhani/c2bf-in-RUST?style=social)
 
