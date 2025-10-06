@@ -1,3 +1,7 @@
+[![Rust](https://img.shields.io/badge/rust-%23000000.svg?style=for-the-badge&logo=rust&logoColor=white)](https://www.rust-lang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+![GitHub Stars](https://img.shields.io/github/stars/notPhani/c2bf-in-RUST?style=social)
+
 # 🧠 C → Brainfuck (Rust) 💀
 
 A caffeine-fueled C subset compiler that eats tokens and screams Brainfuck, implemented in Rust with hand-rolled everything: lexer, Pratt parser, semantic analysis with labeled scopes, source-level inliner via regex sorcery, compact IR, BF codegen with peephole cleanup, and a fat stack of tests that actually pass in ~0.14s on a potato.
